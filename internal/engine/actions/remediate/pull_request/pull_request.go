@@ -85,7 +85,7 @@ type Remediator struct {
 }
 
 type paramsPR struct {
-	ingested   *interfaces.Result
+	ingested   *interfaces.IngestData
 	repo       *pb.Repository
 	title      string
 	modifier   fsModifier

@@ -65,7 +65,7 @@ func NewJQEvaluator(assertions []*pb.RuleType_Definition_Eval_JQComparison) (*Ev
 }
 
 // Eval calls the jq library to evaluate the rule
-func (jqe *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.Result) error {
+func (jqe *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.IngestData) error {
 	if res.Object == nil {
 		return fmt.Errorf("missing object")
 	}

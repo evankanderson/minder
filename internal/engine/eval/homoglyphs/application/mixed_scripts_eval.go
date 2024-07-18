@@ -45,7 +45,7 @@ func NewMixedScriptEvaluator(ghClient provifv1.GitHub) (*MixedScriptsEvaluator, 
 }
 
 // Eval evaluates the mixed scripts rule type
-func (mse *MixedScriptsEvaluator) Eval(ctx context.Context, _ map[string]any, res *engif.Result) error {
+func (mse *MixedScriptsEvaluator) Eval(ctx context.Context, _ map[string]any, res *engif.IngestData) error {
 	hasFoundViolations, err := evaluateHomoglyphs(ctx, mse.processor, res, mse.reviewHandler)
 	if err != nil {
 		return err

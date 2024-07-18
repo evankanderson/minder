@@ -35,7 +35,7 @@ func (*NoopCache) Get(
 	_ engif.Ingester,
 	_ protoreflect.ProtoMessage,
 	_ *structpb.Struct,
-) (*engif.Result, bool) {
+) (*engif.IngestData, bool) {
 	return nil, false
 }
 
@@ -44,6 +44,6 @@ func (*NoopCache) Set(
 	_ engif.Ingester,
 	_ protoreflect.ProtoMessage,
 	_ *structpb.Struct,
-	_ *engif.Result,
+	_ *engif.IngestData,
 ) {
 }

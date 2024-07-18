@@ -12,13 +12,15 @@ INSERT INTO rule_details_eval (
     rule_eval_id,
     status,
     details,
+    file_patches,
     last_updated
 )
-VALUES ($1, $2, $3, NOW())
+VALUES ($1, $2, $3, $4, NOW())
  ON CONFLICT(rule_eval_id)
     DO UPDATE SET
            status = $2,
            details = $3,
+           file_patches = $4,
            last_updated = NOW()
     WHERE rule_details_eval.rule_eval_id = $1
 RETURNING id;
@@ -100,6 +102,7 @@ WITH
        rule_eval_id,
        status AS eval_status,
        details AS eval_details,
+       file_patches AS file_patches,
        last_updated AS eval_last_updated
    FROM rule_details_eval
    ),

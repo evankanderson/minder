@@ -17,11 +17,13 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"github.com/sqlc-dev/pqtype"
 
 	"github.com/stacklok/minder/internal/db"
 	"github.com/stacklok/minder/internal/engine/entities"
@@ -129,6 +131,20 @@ func (e *executor) createOrUpdateEvalStatus(
 		return nil
 	}
 
+	var filePatches pqtype.NullRawMessage
+	if filePatchesErr, ok := params.GetEvalErr().(engif.FilePatchRemediation); ok {
+		patchMap := filePatchesErr.Patches()
+		mapBytes, err := json.Marshal(patchMap)
+		if err == nil {
+			filePatches = pqtype.NullRawMessage{
+				RawMessage: mapBytes,
+				Valid:      true,
+			}
+		} else {
+			logger.Err(err).Msg("error marshaling file patches")
+		}
+	}
+
 	// Get rule instance ID
 	// TODO: we should use the rule instance table in the evaluation process
 	// it should not be necessary to query it here.
@@ -166,9 +182,10 @@ func (e *executor) createOrUpdateEvalStatus(
 	e.metrics.CountEvalStatus(ctx, status, entityType)
 
 	_, err = e.querier.UpsertRuleDetailsEval(ctx, db.UpsertRuleDetailsEvalParams{
-		RuleEvalID: evalID,
-		Status:     evalerrors.ErrorAsEvalStatus(params.GetEvalErr()),
-		Details:    evalerrors.ErrorAsEvalDetails(params.GetEvalErr()),
+		RuleEvalID:  evalID,
+		Status:      evalerrors.ErrorAsEvalStatus(params.GetEvalErr()),
+		Details:     evalerrors.ErrorAsEvalDetails(params.GetEvalErr()),
+		FilePatches: filePatches,
 	})
 	if err != nil {
 		logger.Err(err).Msg("error upserting rule evaluation details")

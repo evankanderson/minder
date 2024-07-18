@@ -76,7 +76,7 @@ func NewTrustyEvaluator(ctx context.Context, ghcli provifv1.GitHub) (*Evaluator,
 }
 
 // Eval implements the Evaluator interface.
-func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.Result) error {
+func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.IngestData) error {
 	// Extract the dependency list from the PR
 	prDependencies, err := readPullRequestDependencies(res)
 	if err != nil {
@@ -149,7 +149,7 @@ func getEcosystemConfig(
 }
 
 // readPullRequestDependencies returns the dependencies found in theingestion results
-func readPullRequestDependencies(res *engif.Result) (*pbinternal.PrDependencies, error) {
+func readPullRequestDependencies(res *engif.IngestData) (*pbinternal.PrDependencies, error) {
 	prdeps, ok := res.Object.(*pbinternal.PrDependencies)
 	if !ok {
 		return nil, fmt.Errorf("object type incompatible with the Trusty evaluator")

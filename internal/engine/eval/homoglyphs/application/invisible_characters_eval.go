@@ -39,7 +39,7 @@ func NewInvisibleCharactersEvaluator(ghClient provifv1.GitHub) (*InvisibleCharac
 }
 
 // Eval evaluates the invisible characters rule type
-func (ice *InvisibleCharactersEvaluator) Eval(ctx context.Context, _ map[string]any, res *engif.Result) error {
+func (ice *InvisibleCharactersEvaluator) Eval(ctx context.Context, _ map[string]any, res *engif.IngestData) error {
 	hasFoundViolations, err := evaluateHomoglyphs(ctx, ice.processor, res, ice.reviewHandler)
 	if err != nil {
 		return err

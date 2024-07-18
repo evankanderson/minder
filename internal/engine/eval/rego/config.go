@@ -42,6 +42,8 @@ func (c *Config) getEvalType() resultEvaluator {
 		return &constraintsEvaluator{
 			format: c.ViolationFormat,
 		}
+	case FilePatchEvaluationType:
+		return &filePatchEvaluator{}
 	}
 
 	return nil

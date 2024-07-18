@@ -51,7 +51,7 @@ func NewVulncheckEvaluator(ghcli provifv1.GitHub) (*Evaluator, error) {
 }
 
 // Eval implements the Evaluator interface.
-func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.Result) error {
+func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.IngestData) error {
 	vulnerablePackages, err := e.getVulnerableDependencies(ctx, pol, res)
 	if err != nil {
 		return err
@@ -65,7 +65,7 @@ func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.Res
 }
 
 // getVulnerableDependencies returns a slice containing vulnerable dependencies.
-func (e *Evaluator) getVulnerableDependencies(ctx context.Context, pol map[string]any, res *engif.Result) ([]string, error) {
+func (e *Evaluator) getVulnerableDependencies(ctx context.Context, pol map[string]any, res *engif.IngestData) ([]string, error) {
 	var vulnerablePackages []string
 
 	// TODO(jhrozek): Fix this!

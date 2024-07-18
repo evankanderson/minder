@@ -25,6 +25,6 @@ import (
 
 // Cache is the interface for the ingest cache.
 type Cache interface {
-	Get(ingester engif.Ingester, entity protoreflect.ProtoMessage, params *structpb.Struct) (*engif.Result, bool)
-	Set(ingester engif.Ingester, entity protoreflect.ProtoMessage, params *structpb.Struct, result *engif.Result)
+	Get(ingester engif.Ingester, entity protoreflect.ProtoMessage, params *structpb.Struct) (*engif.IngestData, bool)
+	Set(ingester engif.Ingester, entity protoreflect.ProtoMessage, params *structpb.Struct, result *engif.IngestData)
 }

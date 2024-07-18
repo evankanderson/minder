@@ -663,11 +663,12 @@ type RuleDetailsAlert struct {
 }
 
 type RuleDetailsEval struct {
-	ID          uuid.UUID       `json:"id"`
-	RuleEvalID  uuid.UUID       `json:"rule_eval_id"`
-	Status      EvalStatusTypes `json:"status"`
-	Details     string          `json:"details"`
-	LastUpdated time.Time       `json:"last_updated"`
+	ID          uuid.UUID             `json:"id"`
+	RuleEvalID  uuid.UUID             `json:"rule_eval_id"`
+	Status      EvalStatusTypes       `json:"status"`
+	Details     string                `json:"details"`
+	LastUpdated time.Time             `json:"last_updated"`
+	FilePatches pqtype.NullRawMessage `json:"file_patches"`
 }
 
 type RuleDetailsRemediate struct {

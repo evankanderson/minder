@@ -39,6 +39,12 @@ const (
 	// the object is denied. Denials may contain a message specified through
 	// the "msg" key.
 	ConstraintsEvaluationType EvaluationType = "constraints"
+
+	// FilePatchEvaluationType is the file patch evaluation type
+	// It uses the rego query "data.minder.patches[filepaths]" to determine
+	// if any files need to be patched.  An empty set of file paths indicates
+	// that no patches are required and the object is in compliance.
+	FilePatchEvaluationType EvaluationType = "file-patch"
 )
 
 func (e EvaluationType) String() string {
@@ -66,6 +72,8 @@ type resultEvaluator interface {
 
 type denyByDefaultEvaluator struct {
 }
+
+var _ resultEvaluator = (*denyByDefaultEvaluator)(nil)
 
 func (*denyByDefaultEvaluator) getQuery() func(r *rego.Rego) {
 	return rego.Query(RegoQueryPrefix)
@@ -121,6 +129,8 @@ func (*denyByDefaultEvaluator) parseResult(rs rego.ResultSet) error {
 type constraintsEvaluator struct {
 	format ConstraintsViolationsFormat
 }
+
+var _ resultEvaluator = (*constraintsEvaluator)(nil)
 
 func (*constraintsEvaluator) getQuery() func(r *rego.Rego) {
 	return rego.Query(fmt.Sprintf("%s.violations[details]", RegoQueryPrefix))
@@ -247,4 +257,55 @@ func (jrb *jsonResultBuilder) formatResults() error {
 	}
 
 	return engerrors.NewErrEvaluationFailed(string(jsonArray))
+}
+
+type filePatchEvaluator struct {
+}
+
+var _ (resultEvaluator) = (*filePatchEvaluator)(nil)
+
+func (*filePatchEvaluator) getQuery() func(r *rego.Rego) {
+	return rego.Query(fmt.Sprintf("%s.patches[filepaths]", RegoQueryPrefix))
+}
+
+func (*filePatchEvaluator) parseResult(rs rego.ResultSet) error {
+	if len(rs) == 0 {
+		// There were no violations
+		return nil
+	}
+
+	failErr := newFilePatchRemediation("file patches required")
+
+	for _, r := range rs {
+		rawPatch := r.Bindings["filepaths"]
+		patch, ok := rawPatch.(map[string]string)
+		if !ok {
+			return fmt.Errorf("filepaths is not a map, it is %T", rawPatch)
+		}
+		for path, content := range patch {
+			failErr.filePatches[path] = content
+		}
+	}
+
+	return failErr
+}
+
+type filePatchRemediation struct {
+	engerrors.EvaluationError
+
+	filePatches map[string]string
+}
+
+func newFilePatchRemediation(msg string) *filePatchRemediation {
+	return &filePatchRemediation{
+		EvaluationError: engerrors.EvaluationError{
+			Base: engerrors.ErrEvaluationFailed,
+			Msg:  msg,
+		},
+		filePatches:     map[string]string{},
+	}
+}
+
+func (f *filePatchRemediation) Patches() map[string]string {
+	return f.filePatches
 }

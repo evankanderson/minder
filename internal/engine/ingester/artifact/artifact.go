@@ -95,7 +95,7 @@ func (i *Ingest) Ingest(
 	ctx context.Context,
 	ent proto.Message,
 	params map[string]any,
-) (*engif.Result, error) {
+) (*engif.IngestData, error) {
 	cfg, err := configFromParams(params)
 	if err != nil {
 		return nil, err
@@ -113,7 +113,7 @@ func (i *Ingest) Ingest(
 		return nil, err
 	}
 
-	return &engif.Result{
+	return &engif.IngestData{
 		Object: applicable,
 	}, nil
 }

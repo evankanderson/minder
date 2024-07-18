@@ -42,14 +42,17 @@ const (
 	EnablePrintEnvVar = "REGO_ENABLE_PRINT"
 )
 
-// Evaluator is the evaluator for rego rules
+// regoEvaluator is the evaluator for rego rules
 // It initializes the rego engine and evaluates the rules
 // The default rego package is "minder"
-type Evaluator struct {
+type regoEvaluator struct {
 	cfg      *Config
 	regoOpts []func(*rego.Rego)
 	reseval  resultEvaluator
 }
+
+// Assert that Evaluator implements engif.Evaluator
+var _ engif.Evaluator = (*regoEvaluator)(nil)
 
 // Input is the input for the rego evaluator
 type Input struct {
@@ -72,7 +75,7 @@ func (*hook) Print(_ print.Context, msg string) error {
 var _ print.Hook = (*hook)(nil)
 
 // NewRegoEvaluator creates a new rego evaluator
-func NewRegoEvaluator(cfg *minderv1.RuleType_Definition_Eval_Rego) (*Evaluator, error) {
+func NewRegoEvaluator(cfg *minderv1.RuleType_Definition_Eval_Rego) (engif.Evaluator, error) {
 	c, err := parseConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse rego config: %w", err)
@@ -80,7 +83,7 @@ func NewRegoEvaluator(cfg *minderv1.RuleType_Definition_Eval_Rego) (*Evaluator, 
 
 	re := c.getEvalType()
 
-	eval := &Evaluator{
+	eval := &regoEvaluator{
 		cfg:     c,
 		reseval: re,
 		regoOpts: []func(*rego.Rego){
@@ -101,12 +104,12 @@ func NewRegoEvaluator(cfg *minderv1.RuleType_Definition_Eval_Rego) (*Evaluator, 
 	return eval, nil
 }
 
-func (e *Evaluator) newRegoFromOptions(opts ...func(*rego.Rego)) *rego.Rego {
+func (e *regoEvaluator) newRegoFromOptions(opts ...func(*rego.Rego)) *rego.Rego {
 	return rego.New(append(e.regoOpts, opts...)...)
 }
 
 // Eval implements the Evaluator interface.
-func (e *Evaluator) Eval(ctx context.Context, pol map[string]any, res *engif.Result) error {
+func (e *regoEvaluator) Eval(ctx context.Context, pol map[string]any, res *engif.IngestData) error {
 	// The rego engine is actually able to handle nil
 	// objects quite gracefully, so we don't need to check
 	// this explicitly.

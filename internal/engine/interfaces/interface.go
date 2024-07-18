@@ -36,7 +36,7 @@ import (
 // Ingester is the interface for a rule type ingester
 type Ingester interface {
 	// Ingest does the actual data ingestion for a rule type
-	Ingest(ctx context.Context, ent protoreflect.ProtoMessage, params map[string]any) (*Result, error)
+	Ingest(ctx context.Context, ent protoreflect.ProtoMessage, params map[string]any) (*IngestData, error)
 	// GetType returns the type of the ingester
 	GetType() string
 	// GetConfig returns the config for the ingester
@@ -45,11 +45,11 @@ type Ingester interface {
 
 // Evaluator is the interface for a rule type evaluator
 type Evaluator interface {
-	Eval(ctx context.Context, profile map[string]any, res *Result) error
+	Eval(ctx context.Context, profile map[string]any, res *IngestData) error
 }
 
-// Result is the result of an ingester
-type Result struct {
+// IngestData is the result of an ingester
+type IngestData struct {
 	// Object is the object that was ingested. Normally comes from an external
 	// system like an HTTP server.
 	Object any
@@ -61,6 +61,15 @@ type Result struct {
 	// FIXME: It might be cleaner to either wrap both Fs and Storer in a struct
 	// or pass out the git.Repository structure instead of the storer.
 	Storer storage.Storer
+}
+
+// FilePatchRemediation represents a requested set of file patches to apply to
+// a repository contents based on the results of a rule evaluation
+type FilePatchRemediation interface {
+	error
+
+	// Patches contains a
+	Patches() map[string]string
 }
 
 // ActionType represents the type of action, i.e., remediate, alert, etc.
@@ -92,7 +101,7 @@ const (
 // a repo and most profiles are expecting a repo, the RepoID parameter is mandatory. For entities
 // other than artifacts, the ArtifactID should be 0 that is translated to NULL in the database.
 type EvalStatusParams struct {
-	Result           *Result
+	Result           *IngestData
 	Profile          *pb.Profile
 	Rule             *pb.Profile_Rule
 	ProfileID        uuid.UUID
@@ -192,12 +201,12 @@ func (e *EvalStatusParams) GetProfile() *pb.Profile {
 }
 
 // SetIngestResult sets the result of the ingestion for use later on in the actions
-func (e *EvalStatusParams) SetIngestResult(res *Result) {
+func (e *EvalStatusParams) SetIngestResult(res *IngestData) {
 	e.Result = res
 }
 
 // GetIngestResult returns the result of the ingestion, if any
-func (e *EvalStatusParams) GetIngestResult() *Result {
+func (e *EvalStatusParams) GetIngestResult() *IngestData {
 	return e.Result
 }
 
@@ -229,13 +238,13 @@ func (e *EvalStatusParams) DecorateLogger(l zerolog.Logger) zerolog.Logger {
 // EvalParamsReader is the interface used for a rule type evaluator
 type EvalParamsReader interface {
 	GetRule() *pb.Profile_Rule
-	GetIngestResult() *Result
+	GetIngestResult() *IngestData
 }
 
 // EvalParamsReadWriter is the interface used for a rule type engine, allows setting the ingestion result
 type EvalParamsReadWriter interface {
 	EvalParamsReader
-	SetIngestResult(*Result)
+	SetIngestResult(*IngestData)
 }
 
 // ActionsParams is the interface used for processing a rule type action

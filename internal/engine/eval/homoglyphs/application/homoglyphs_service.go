@@ -67,7 +67,7 @@ func NewHomoglyphsEvaluator(
 func evaluateHomoglyphs(
 	ctx context.Context,
 	processor domain.HomoglyphProcessor,
-	res *engif.Result,
+	res *engif.IngestData,
 	reviewHandler *communication.GhReviewPrHandler,
 ) (bool, error) {
 	if res == nil {

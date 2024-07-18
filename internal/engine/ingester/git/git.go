@@ -69,7 +69,7 @@ func (gi *Git) GetConfig() protoreflect.ProtoMessage {
 }
 
 // Ingest does the actual data ingestion for a rule type by cloning a git repo
-func (gi *Git) Ingest(ctx context.Context, ent protoreflect.ProtoMessage, params map[string]any) (*engif.Result, error) {
+func (gi *Git) Ingest(ctx context.Context, ent protoreflect.ProtoMessage, params map[string]any) (*engif.IngestData, error) {
 	userCfg := &IngesterConfig{}
 	if err := mapstructure.Decode(params, userCfg); err != nil {
 		return nil, fmt.Errorf("failed to read git ingester configuration from params: %w", err)
@@ -102,7 +102,7 @@ func (gi *Git) Ingest(ctx context.Context, ent protoreflect.ProtoMessage, params
 		return nil, fmt.Errorf("could not get worktree: %w", err)
 	}
 
-	return &engif.Result{
+	return &engif.IngestData{
 		Object: nil,
 		Fs:     wt.Filesystem,
 		Storer: r.Storer,

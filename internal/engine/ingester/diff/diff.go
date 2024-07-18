@@ -80,7 +80,7 @@ func (di *Diff) Ingest(
 	ctx context.Context,
 	ent protoreflect.ProtoMessage,
 	_ map[string]any,
-) (*engif.Result, error) {
+) (*engif.IngestData, error) {
 	pr, ok := ent.(*pb.PullRequest)
 	if !ok {
 		return nil, fmt.Errorf("entity is not a pull request")
@@ -117,7 +117,7 @@ func (di *Diff) Ingest(
 			page = resp.NextPage
 		}
 
-		return &engif.Result{
+		return &engif.IngestData{
 			Object: &pbinternal.PrDependencies{
 				Pr:   pr,
 				Deps: allDiffs,
@@ -147,7 +147,7 @@ func (di *Diff) Ingest(
 			page = resp.NextPage
 		}
 
-		return &engif.Result{
+		return &engif.IngestData{
 			Object: &pbinternal.PrContents{
 				Pr:    pr,
 				Files: allDiffs,

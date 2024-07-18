@@ -36,7 +36,7 @@ import (
 )
 
 // MinderRegoLib contains the minder-specific functions for rego
-var MinderRegoLib = []func(res *engif.Result) func(*rego.Rego){
+var MinderRegoLib = []func(res *engif.IngestData) func(*rego.Rego){
 	FileExists,
 	FileLs,
 	FileLsGlob,
@@ -46,7 +46,7 @@ var MinderRegoLib = []func(res *engif.Result) func(*rego.Rego){
 	ListGithubActions,
 }
 
-func instantiateRegoLib(res *engif.Result) []func(*rego.Rego) {
+func instantiateRegoLib(res *engif.IngestData) []func(*rego.Rego) {
 	var lib []func(*rego.Rego)
 	for _, f := range MinderRegoLib {
 		lib = append(lib, f(res))
@@ -58,7 +58,7 @@ func instantiateRegoLib(res *engif.Result) []func(*rego.Rego) {
 // in the filesystem being evaluated (which comes from the ingester).
 // It takes one argument, the path to the file to check.
 // It's exposed as `file.exists`.
-func FileExists(res *engif.Result) func(*rego.Rego) {
+func FileExists(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.exists",
@@ -93,7 +93,7 @@ func FileExists(res *engif.Result) func(*rego.Rego) {
 // FileRead is a rego function that reads a file from the filesystem
 // being evaluated (which comes from the ingester). It takes one argument,
 // the path to the file to read. It's exposed as `file.read`.
-func FileRead(res *engif.Result) func(*rego.Rego) {
+func FileRead(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.read",
@@ -138,7 +138,7 @@ func FileRead(res *engif.Result) func(*rego.Rego) {
 // If the file is a directory, it returns the files in the directory.
 // If the file is a symlink, it follows the symlink and returns the files
 // in the target.
-func FileLs(res *engif.Result) func(*rego.Rego) {
+func FileLs(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.ls",
@@ -208,7 +208,7 @@ func FileLs(res *engif.Result) func(*rego.Rego) {
 // in the filesystem being evaluated (which comes from the ingester).
 // It takes one argument, the path to the pattern to match. It's exposed
 // as `file.ls_glob`.
-func FileLsGlob(res *engif.Result) func(*rego.Rego) {
+func FileLsGlob(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.ls_glob",
@@ -247,7 +247,7 @@ func FileLsGlob(res *engif.Result) func(*rego.Rego) {
 // in the filesystem being evaluated (which comes from the ingester).
 // It takes one argument, the path to the directory to walk. It's exposed
 // as `file.walk`.
-func FileWalk(res *engif.Result) func(*rego.Rego) {
+func FileWalk(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.walk",
@@ -341,7 +341,7 @@ func fileLsHandleDir(path string, bfs billy.Filesystem) (*ast.Term, error) {
 // as `github_workflow.ls_actions`.
 // The function returns a set of strings, each string being the name of an action.
 // The frizbee library guarantees that the actions are unique.
-func ListGithubActions(res *engif.Result) func(*rego.Rego) {
+func ListGithubActions(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "github_workflow.ls_actions",
@@ -380,7 +380,7 @@ func ListGithubActions(res *engif.Result) func(*rego.Rego) {
 // in the filesystem being evaluated (which comes from the ingester).
 // It takes one argument, the path to the file to check. It's exposed
 // as `file.http_type`.
-func FileHTTPType(res *engif.Result) func(*rego.Rego) {
+func FileHTTPType(res *engif.IngestData) func(*rego.Rego) {
 	return rego.Function1(
 		&rego.Function{
 			Name: "file.http_type",

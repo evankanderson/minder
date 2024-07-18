@@ -157,7 +157,7 @@ func TestCache(t *testing.T) {
 			_, ok := cache.Get(tt.args.in0, tt.args.in1, tt.args.in2)
 			require.False(t, ok, "cache should be empty")
 
-			res := &engif.Result{
+			res := &engif.IngestData{
 				Object: map[string]any{
 					"foo": "bar",
 				},
@@ -181,7 +181,7 @@ func TestCache(t *testing.T) {
 			_, ok := cache.Get(tt.args.in0, tt.args.in1, tt.args.in2)
 			require.False(t, ok, "cache should be empty")
 
-			res := &engif.Result{
+			res := &engif.IngestData{
 				Object: map[string]any{
 					"foo": "bar",
 				},
