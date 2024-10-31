@@ -7,10 +7,12 @@ package rego
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 
 	"github.com/open-policy-agent/opa/rego"
-	"github.com/open-policy-agent/opa/topdown/print"
+	"github.com/open-policy-agent/opa/topdown"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	eoptions "github.com/mindersec/minder/internal/engine/options"
@@ -32,6 +34,36 @@ const (
 	EnablePrintEnvVar = "REGO_ENABLE_PRINT"
 )
 
+func publicDialer(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			fmt.Printf("Got error: %v\n", err)
+			return nil, err
+		}
+		fmt.Printf("Got Conn to %+v (%T)\n", conn.RemoteAddr(), conn.RemoteAddr())
+		remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			return nil, fmt.Errorf("could not get remote address")
+		}
+		if remote == nil {
+			return nil, fmt.Errorf("remote address is nil")
+		}
+		if !remote.IP.IsGlobalUnicast() || remote.IP.IsLoopback() || remote.IP.IsPrivate() {
+			fmt.Printf("BLOCKED!!!!\n")
+			return nil, fmt.Errorf("remote address is not a public IP")
+		}
+		return conn, err
+	}
+}
+
+func init() {
+	publicNetTransport := &http.Transport{
+		DialContext: publicDialer(&net.Dialer{}),
+	}
+	http.DefaultTransport = publicNetTransport
+}
+
 // Evaluator is the evaluator for rego rules
 // It initializes the rego engine and evaluates the rules
 // The default rego package is "minder"
@@ -50,16 +82,6 @@ type Input struct {
 	// OutputFormat is the format to output violations in
 	OutputFormat ConstraintsViolationsFormat `json:"output_format"`
 }
-
-type hook struct {
-}
-
-func (*hook) Print(_ print.Context, msg string) error {
-	fmt.Println(msg)
-	return nil
-}
-
-var _ print.Hook = (*hook)(nil)
 
 // NewRegoEvaluator creates a new rego evaluator
 func NewRegoEvaluator(
@@ -80,6 +102,7 @@ func NewRegoEvaluator(
 			re.getQuery(),
 			rego.Module(MinderRegoFile, c.Def),
 			rego.Strict(true),
+			// rego.UnsafeBuiltins(map[string]struct{}{"http.send": {}}),
 		},
 	}
 
@@ -90,10 +113,9 @@ func NewRegoEvaluator(
 	}
 
 	if os.Getenv(EnablePrintEnvVar) == "true" {
-		h := &hook{}
 		eval.regoOpts = append(eval.regoOpts,
 			rego.EnablePrintStatements(true),
-			rego.PrintHook(h),
+			rego.PrintHook(topdown.NewPrintHook(os.Stderr)),
 		)
 	}
 

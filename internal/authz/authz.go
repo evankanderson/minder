@@ -78,15 +78,19 @@ func (a *ClientWrapper) initAuthzClient() error {
 		clicfg.StoreId = a.cfg.StoreID
 	}
 
+	// Our default HTTP transport blocks requests except to public IPs.
+	// We need to override this to allow requests to the OpenFGA server.
+	clicfg.HTTPClient = &http.Client{
+		Transport: &http.Transport{},
+	}
+
 	if a.cfg.Auth.Method == "token" {
-		rt, err := transport.NewBearerAuthWithRefreshRoundTripper("", a.cfg.Auth.Token.TokenPath, http.DefaultTransport)
+		rt, err := transport.NewBearerAuthWithRefreshRoundTripper("", a.cfg.Auth.Token.TokenPath, clicfg.HTTPClient.Transport)
 		if err != nil {
 			return fmt.Errorf("failed to create bearer auth round tripper: %w", err)
 		}
 
-		clicfg.HTTPClient = &http.Client{
-			Transport: rt,
-		}
+		clicfg.HTTPClient.Transport = rt
 	}
 
 	cli, err := fgaclient.NewSdkClient(clicfg)
