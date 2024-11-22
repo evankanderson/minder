@@ -58,13 +58,9 @@ func execOnOneRuleType(
 		return err
 	}
 
-	// add the rule type to the table rows
-	name := appendRuleTypePropertiesToName(rt)
 	t.AddRow(
-		*rt.Context.Project,
-		*rt.Id,
-		name,
-		cli.ConcatenateAndWrap(rt.Description, 20),
+		appendRuleTypePropertiesToName(rt),
+		cli.ConcatenateAndWrap(rt.Description, 40),
 	)
 
 	return nil
@@ -157,6 +153,7 @@ func ruleTypeReleasePhaseToString(phase minderv1.RuleTypeReleasePhase) string {
 // where <properties> is a comma separated list of properties.
 func appendRuleTypePropertiesToName(rt *minderv1.RuleType) string {
 	name := rt.Name
+	id := rt.GetId()
 	properties := []string{}
 	// add the release_phase property if it is present
 	phase := ruleTypeReleasePhaseToString(rt.ReleasePhase)
@@ -171,9 +168,8 @@ func appendRuleTypePropertiesToName(rt *minderv1.RuleType) string {
 
 	// return the name with the properties if any
 	if len(properties) != 0 {
-		return fmt.Sprintf("%s (%s)", name, strings.Join(properties, ", "))
+		return fmt.Sprintf("%s\n%s\n(%s)", name, id, strings.Join(properties, ", "))
 	}
+	return fmt.Sprintf("%s\n%s", name, id)
 
-	// return only name otherwise
-	return name
 }

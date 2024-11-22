@@ -119,8 +119,8 @@ func repoListLayout(table *tablewriter.Table) {
 
 func ruleTypeListLayout(table *tablewriter.Table) {
 	defaultLayout(table)
-	table.SetHeader([]string{"Project", "ID", "Name", "Description"})
-	table.SetAutoMergeCellsByColumnIndex([]int{0, 1, 2, 3})
+	table.SetHeader([]string{"Name", "Description"})
+	table.SetAutoMergeCellsByColumnIndex([]int{0, 1})
 	// This is needed for the rule definition and rule parameters
 	table.SetAutoWrapText(true)
 }

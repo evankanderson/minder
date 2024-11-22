@@ -64,11 +64,8 @@ func listCommand(ctx context.Context, cmd *cobra.Command, _ []string, conn *grpc
 	case app.Table:
 		table := initializeTableForList()
 		for _, rt := range resp.RuleTypes {
-			name := appendRuleTypePropertiesToName(rt)
 			table.AddRow(
-				*rt.Context.Project,
-				*rt.Id,
-				name,
+				appendRuleTypePropertiesToName(rt),
 				rt.Description,
 			)
 		}
