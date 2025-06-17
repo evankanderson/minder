@@ -58,14 +58,17 @@ jobs:
         run: |
           helm registry login $BASE_REPO --username ${{ github.repository_owner }} --password ${{ secrets.GITHUB_TOKEN }}
       - name: Push Helm Chart
+        id: helm-push
         run: |
           cd deployment/helm
-          helm push minder-*.tgz oci://$BASE_REPO/helm
+          helm push minder-*.tgz oci://$BASE_REPO/helm | tee helm-push.log
+          grep Digst: helm-push.log | awk '{print "digest="$2}' >> "$GITHUB_OUTPUT"
       - name: Sign the published helm chart and ko image
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
           # Sign the ko image
-          cosign sign --yes $BASE_REPO/server
+          cosign sign --yes $(cat deployment/helm/built-images.yaml)
           # Sign the helm chart
-          cosign sign --yes $BASE_REPO/helm:$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          cosign sign --yes $BASE_REPO/helm/minder@${{ steps.helm-push.outputs.digest }}
+  
