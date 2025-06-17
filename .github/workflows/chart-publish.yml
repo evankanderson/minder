@@ -9,7 +9,7 @@ name: Publish Helm Chart
 on:
   push:
     branches:
-      - main
+      - prestage
   schedule:
     # Weekdays at noon GMT
     - cron: '00 12 * * 1-5'
@@ -22,12 +22,14 @@ jobs:
       packages: write
       id-token: write # To sign the provenance.
     env:
-      BASE_REPO: "ghcr.io/mindersec/minder"
+      BASE_REPO: "ghcr.io/evankanderson/minder"
     steps:
       - name: Install Cosign
         uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: prestage
       - name: Setup Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
@@ -66,4 +68,4 @@ jobs:
           # Sign the ko image
           cosign sign --yes $BASE_REPO/server
           # Sign the helm chart
-          cosign sign --yes $BASE_REPO/helm/minder:$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          cosign sign --yes $BASE_REPO/helm:$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
