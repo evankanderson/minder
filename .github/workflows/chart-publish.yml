@@ -10,9 +10,9 @@ on:
   push:
     branches:
       - prestage
-  schedule:
-    # Weekdays at noon GMT
-    - cron: '00 12 * * 1-5'
+#  schedule:
+#    # Weekdays at noon GMT
+#    - cron: '00 12 * * 1-5'
 jobs:
   check-helm:
     name: Build Helm chart
@@ -49,6 +49,8 @@ jobs:
       - name: Build images and Helm Chart
         run: |
           KO_DOCKER_REPO=$BASE_REPO make helm
+          echo "Built images:"
+          cat deployment/helm/built-images.yaml
         env:
           KO_PUSH_IMAGE: "true"
           HELM_PACKAGE_VERSION: "${{ steps.version-string.outputs.tag }}"
@@ -61,8 +63,10 @@ jobs:
         id: helm-push
         run: |
           cd deployment/helm
-          helm push minder-*.tgz oci://$BASE_REPO/helm | tee helm-push.log
-          grep Digest: helm-push.log | awk '{print "digest="$2}' >> "$GITHUB_OUTPUT"
+          helm push minder-*.tgz oci://$BASE_REPO/helm 2>&1 | tee helm-push.log
+          grep Digest: helm-push.log | awk '{print "digest="$2}' > /tmp/helm-digest
+          echo -n "Helm chart digest: $(cat /tmp/helm-digest)"
+          cat /tmp/helm-digest >> "$GITHUB_OUTPUT"
       - name: Sign the published helm chart and ko image
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
