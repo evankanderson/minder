@@ -5,6 +5,7 @@
 package rest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,7 @@ type Ingestor struct {
 	restCfg          *pb.RestType
 	cli              interfaces.RESTProvider
 	endpointTemplate *util.SafeTemplate
-	method           string
+	methodTemplate   *util.SafeTemplate
 	fallback         []ingestorFallback
 }
 
@@ -65,7 +66,11 @@ func NewRestRuleDataIngest(
 		return nil, fmt.Errorf("cannot parse endpoint template: %w", err)
 	}
 
-	method := util.HttpMethodFromString(restCfg.Method, http.MethodGet)
+	method := cmp.Or(restCfg.Method, http.MethodGet)
+	methodTmpl, err := util.NewSafeTextTemplate(&method, "method")
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse method template: %w", err)
+	}
 
 	fallback := make([]ingestorFallback, len(restCfg.Fallback))
 	for _, fb := range restCfg.Fallback {
@@ -80,7 +85,7 @@ func NewRestRuleDataIngest(
 		restCfg:          restCfg,
 		cli:              cli,
 		endpointTemplate: tmpl,
-		method:           method,
+		methodTemplate:   methodTmpl,
 		fallback:         fallback,
 	}, nil
 }
@@ -123,7 +128,13 @@ func (rdi *Ingestor) Ingest(
 		bodyr = strings.NewReader(*rdi.restCfg.Body)
 	}
 
-	req, err := rdi.cli.NewRequest(rdi.method, endpoint, bodyr)
+	method, err := rdi.methodTemplate.Render(ctx, retp, EndpointBytesLimit)
+	if err != nil {
+		return nil, fmt.Errorf("cannot execute method template: %w", err)
+	}
+	method = strings.ToUpper(method)
+
+	req, err := rdi.cli.NewRequest(method, endpoint, bodyr)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
@@ -146,7 +157,7 @@ func (rdi *Ingestor) Ingest(
 
 	return &interfaces.Ingested{
 		Object:     data,
-		Checkpoint: checkpoints.NewCheckpointV1Now().WithHTTP(endpoint, rdi.method),
+		Checkpoint: checkpoints.NewCheckpointV1Now().WithHTTP(endpoint, method),
 	}, nil
 }
 

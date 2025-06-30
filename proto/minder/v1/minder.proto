@@ -2358,9 +2358,11 @@ message RestType {
     ];
 
     // method is the method to use to fetch data.
+    // Go templates may be used to vary the method using the same parameters
+    // as the endpoint.
     string method = 2 [
         (buf.validate.field).string = {
-            pattern: '^(?i)(GET|POST|PUT|PATCH|DELETE)$'
+            max_len: 50
         },
         (buf.validate.field).ignore = IGNORE_IF_DEFAULT_VALUE
     ];
