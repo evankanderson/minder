@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,6 +29,14 @@ import (
 //
 //nolint:gosec // This is not a hardcoded credential
 const MinderAuthTokenEnvVar = "MINDER_AUTH_TOKEN"
+
+// GitHubActionsEndpoint is the environment variable GitHub uses to signal the
+// endpoint for GitHub Actions OIDC token requests
+const GitHubActionsEndpoint = "ACTIONS_ID_TOKEN_REQUEST_URL"
+
+// GitHubActionsTokenEnv is the environment variable GitHub uses to authenticate
+// the calls to the GitHubActionsEndpoint
+const GitHubActionsTokenEnv = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
 // ErrGettingRefreshToken is an error for when we can't get a refresh token
 var ErrGettingRefreshToken = errors.New("error refreshing credentials")
@@ -90,10 +99,18 @@ func GetGrpcConnection(
 	token := ""
 	if os.Getenv(MinderAuthTokenEnvVar) != "" {
 		token = os.Getenv(MinderAuthTokenEnvVar)
+	} else if os.Getenv(GitHubActionsTokenEnv) != "" {
+		var err error
+		token, err = GetTokenFromGitHub()
+		if err != nil {
+			return nil, fmt.Errorf("could not fetch GitHub Actions token: %w", err)
+		}
 	} else {
 		t, err := GetToken(cfg.GetGRPCAddress(), opts, issuerUrl, realm, clientId)
 		if err == nil {
 			token = t
+		} else {
+			return nil, err
 		}
 	}
 
@@ -152,20 +169,21 @@ func RemoveCredentials(serverAddress string) error {
 func GetToken(serverAddress string, opts []grpc.DialOption, issuerUrl string, realm string, clientId string) (string, error) {
 	refreshLimit := 10 * time.Second
 	creds, err := LoadCredentials(serverAddress)
-	if err != nil {
-		return "", fmt.Errorf("error loading credentials: %v", err)
+	// If the credentials file doesn't exist, proceed as if it were empty (zero default)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("error loading credentials: %w", err)
 	}
 	needsRefresh := time.Now().Add(refreshLimit).After(creds.AccessTokenExpiresAt)
 
 	if needsRefresh {
 		realmUrl, err := GetRealmUrl(serverAddress, opts, issuerUrl, realm)
 		if err != nil {
-			return "", fmt.Errorf("error building realm URL: %v", err)
+			return "", fmt.Errorf("error building realm URL: %w", err)
 		}
 		// TODO: this should probably use rp.NewRelyingPartyOIDC from zitadel, rather than making its own URL
 		parsedUrl, err := url.Parse(realmUrl)
 		if err != nil {
-			return "", fmt.Errorf("error parsing realm URL: %v", err)
+			return "", fmt.Errorf("error parsing realm URL: %w", err)
 		}
 		parsedUrl = parsedUrl.JoinPath("protocol/openid-connect/token")
 		updatedCreds, err := RefreshCredentials(serverAddress, creds.RefreshToken, parsedUrl.String(), clientId)
@@ -240,6 +258,47 @@ func extractWWWAuthenticateRealm(header string) string {
 	return ""
 }
 
+// GetTokenFromGitHub uses the GitHub $ACTIONS_ID_TOKEN_REQUEST_URL to fetch
+// an OIDC token from GitHub which can be used to authenticate to Minder if the
+// machine_accounts flag is enabled.
+func GetTokenFromGitHub() (string, error) {
+	requestURL := os.Getenv(GitHubActionsEndpoint)
+	requestToken := os.Getenv(GitHubActionsTokenEnv)
+	if requestURL == "" || requestToken == "" {
+		return "", fmt.Errorf("missing %s or %s environment variables", GitHubActionsEndpoint, GitHubActionsTokenEnv)
+	}
+
+	// Add audience=minder to the query params
+	u, err := url.Parse(requestURL)
+	if err != nil {
+		return "", fmt.Errorf("cannot parse URL %q: %w", requestURL, err)
+	}
+	q := u.Query()
+	q.Set("audience", "minder")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("unable to create request to %q: %w", u.String(), err)
+	}
+	req.Header.Set("Authorization", "Bearer "+requestToken)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("unable to fetch %s: %w", u.String(), err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("unable to decode JSON: %w", err)
+	}
+	return result.Value, nil
+}
+
 // RefreshCredentials uses a refresh token to get and save a new set of credentials
 func RefreshCredentials(serverAddress string, refreshToken string, realmUrl string, clientId string) (OpenIdCredentials, error) {
 
@@ -288,19 +347,19 @@ func RefreshCredentials(serverAddress string, refreshToken string, realmUrl stri
 func LoadCredentials(serverAddress string) (OpenIdCredentials, error) {
 	filePath, err := getCredentialsPath(serverAddress, false)
 	if err != nil {
-		return OpenIdCredentials{}, fmt.Errorf("error getting credentials path: %v", err)
+		return OpenIdCredentials{}, fmt.Errorf("error getting credentials path: %w", err)
 	}
 
 	// Read the file
 	credsJSON, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
-		return OpenIdCredentials{}, fmt.Errorf("error reading credentials file: %v", err)
+		return OpenIdCredentials{}, fmt.Errorf("error reading credentials file: %w", err)
 	}
 
 	var creds OpenIdCredentials
 	err = json.Unmarshal(credsJSON, &creds)
 	if err != nil {
-		return OpenIdCredentials{}, fmt.Errorf("error unmarshaling credentials: %v", err)
+		return OpenIdCredentials{}, fmt.Errorf("error unmarshaling credentials: %w", err)
 	}
 	return creds, nil
 }

@@ -53,15 +53,14 @@ func listCommand(ctx context.Context, cmd *cobra.Command, _ []string, conn *grpc
 
 	switch format {
 	case app.Table:
-		t := table.New(table.Simple, layouts.RepoList, nil)
+		t := table.New(table.Simple, layouts.Default,
+			[]string{"Owner", "Name", "Provider", "Upstream ID"})
 		for _, v := range resp.Results {
 			t.AddRow(
-				*v.Id,
-				*v.Context.Project,
-				*v.Context.Provider,
-				fmt.Sprintf("%d", v.GetRepoId()),
 				v.GetOwner(),
 				v.GetName(),
+				*v.Context.Provider,
+				fmt.Sprintf("%d", v.GetRepoId()),
 			)
 		}
 		t.Render()
