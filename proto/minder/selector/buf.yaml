@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2023 The Minder Authors
+# SPDX-License-Identifier: Apache-2.0
+
+version: v1
+breaking:
+  use:
+    - WIRE_JSON
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+  allow_comment_ignores: true
