@@ -278,7 +278,7 @@ func (e *executor) updateLockLease(
 		return
 	}
 
-	logger.Info().Msg("lock lease updated")
+	// logger.Info().Msg("lock lease updated")
 }
 
 func (e *executor) releaseLockAndFlush(

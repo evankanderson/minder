@@ -153,7 +153,6 @@ func (r *RuleTypeEngine) Eval(
 		}
 	}
 
-	logger.Info().Msg("entity evaluation - ingest started")
 	// Try looking at the ingesting cache first
 	ingestData, ok := r.ingestCache.Get(r.ingester, entity, ruleParams)
 	if !ok {
@@ -167,15 +166,12 @@ func (r *RuleTypeEngine) Eval(
 		}
 		r.ingestCache.Set(r.ingester, entity, ruleParams, ingestData)
 	} else {
-		logger.Info().Str("id", r.GetID()).Msg("entity evaluation - ingest using cache")
 	}
-	logger.Info().Msg("entity evaluation - ingest completed")
 	params.SetIngestResult(ingestData)
 
 	// Process evaluation
-	logger.Info().Msg("entity evaluation - evaluation started")
 	res, err := r.ruleEvaluator.Eval(ctx, ruleDef, entity, ingestData)
-	logger.Info().Msg("entity evaluation - evaluation completed")
+	// logger.Info().Str("name", r.ruletype.Type).Interface("entity", entity).Interface("res", res.Output).Msg("entity evaluation - evaluation completed, with result")
 	return res, err
 }
 
