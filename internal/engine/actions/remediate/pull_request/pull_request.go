@@ -285,7 +285,7 @@ func (r *Remediator) runOn(
 	ctx context.Context,
 	p *paramsPR,
 ) (json.RawMessage, error) {
-	logger := zerolog.Ctx(ctx).With().Str("repo", p.repo.String()).Logger()
+	logger := zerolog.Ctx(ctx).With().Str("repo", p.repo.GetCloneUrl()).Logger()
 	repo, err := git.Open(p.ingested.Storer, p.ingested.Fs)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open git repo: %w", err)

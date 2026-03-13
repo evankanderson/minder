@@ -256,7 +256,7 @@ func (rae *RuleActionsEngine) isSkippable(ctx context.Context, actionType engif.
 	switch action.GetOnOffState() {
 	case models.ActionOptOff:
 		// Action is off, skip
-		logger.Msg("action is off, skipping")
+		// logger.Msg("action is off, skipping")
 		return true
 	case models.ActionOptUnknown:
 		// Action is unknown, skip
@@ -270,7 +270,7 @@ func (rae *RuleActionsEngine) isSkippable(ctx context.Context, actionType engif.
 				// rule evaluation was skipped silently, skip action
 				errors.Is(evalErr, enginerr.ErrEvaluationSkipSilently)
 	}
-	logger.Bool("skip_action", skipAction).Msg("action skip decision")
+	// logger.Bool("skip_action", skipAction).Msg("action skip decision")
 	// Everything else, do not skip
 	return skipAction
 }

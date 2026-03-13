@@ -49,6 +49,7 @@ type RuleEvalData struct {
 	Profile  Profile  `json:"profile"`
 
 	EvalResult string                                   `json:"eval_result"`
+	EvalData   any                                      `json:"output"`
 	Actions    map[interfaces.ActionType]ActionEvalData `json:"actions"`
 
 	// TODO: do we want to store params?
@@ -132,6 +133,7 @@ func (ts *TelemetryStore) AddRuleEval(
 		RuleType:   RuleType{Name: ruleTypeName, ID: evalInfo.GetRule().RuleTypeID},
 		Profile:    Profile{Name: evalInfo.GetProfile().Name, ID: evalInfo.GetProfile().ID},
 		EvalResult: errors.EvalErrorAsString(evalInfo.GetEvalErr()),
+		EvalData:   evalInfo.GetEvalResult(),
 		Actions:    map[interfaces.ActionType]ActionEvalData{},
 	}
 
