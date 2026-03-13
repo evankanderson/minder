@@ -165,13 +165,13 @@ func (r *RuleTypeEngine) Eval(
 			return nil, fmt.Errorf("error ingesting data: %w", err)
 		}
 		r.ingestCache.Set(r.ingester, entity, ruleParams, ingestData)
-	} else {
 	}
+	logger.Debug().Msg("entity evaluation - ingest completed")
 	params.SetIngestResult(ingestData)
 
 	// Process evaluation
 	res, err := r.ruleEvaluator.Eval(ctx, ruleDef, entity, ingestData)
-	// logger.Info().Str("name", r.ruletype.Type).Interface("entity", entity).Interface("res", res.Output).Msg("entity evaluation - evaluation completed, with result")
+	logger.Info().Msg("entity evaluation - evaluation completed")
 	return res, err
 }
 

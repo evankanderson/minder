@@ -241,26 +241,27 @@ func shouldAlert(
 func (rae *RuleActionsEngine) isSkippable(ctx context.Context, actionType engif.ActionType, evalErr error) bool {
 	var skipAction bool
 
-	logger := zerolog.Ctx(ctx).Info().
+	logger := zerolog.Ctx(ctx).With().
 		Str("eval_status", string(enginerr.ErrorAsEvalStatus(evalErr))).
-		Str("action", string(actionType))
+		Str("action", string(actionType)).
+		Logger()
 
 	// Get the profile option set for this action type
 	action, ok := rae.actions[actionType]
 	if !ok {
 		// If the action is not found, definitely skip it
-		logger.Msg("action type not found, skipping")
+		logger.Warn().Msg("action type not found, skipping")
 		return true
 	}
 	// Check the action option
 	switch action.GetOnOffState() {
 	case models.ActionOptOff:
 		// Action is off, skip
-		logger.Msg("action is off, skipping")
+		logger.Debug().Msg("action is off, skipping")
 		return true
 	case models.ActionOptUnknown:
 		// Action is unknown, skip
-		logger.Msg("unknown action option, skipping")
+		logger.Info().Msg("unknown action option, skipping")
 		return true
 	case models.ActionOptDryRun, models.ActionOptOn:
 		// Action is on or dry-run, do not skip yet. Check the evaluation error
@@ -270,7 +271,7 @@ func (rae *RuleActionsEngine) isSkippable(ctx context.Context, actionType engif.
 				// rule evaluation was skipped silently, skip action
 				errors.Is(evalErr, enginerr.ErrEvaluationSkipSilently)
 	}
-	logger.Bool("skip_action", skipAction).Msg("action skip decision")
+	logger.Debug().Bool("skip_action", skipAction).Msg("action skip decision")
 	// Everything else, do not skip
 	return skipAction
 }

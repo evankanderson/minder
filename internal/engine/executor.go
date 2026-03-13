@@ -278,7 +278,7 @@ func (e *executor) updateLockLease(
 		return
 	}
 
-	// logger.Info().Msg("lock lease updated")
+	// logger.Debug().Msg("lock lease updated")
 }
 
 func (e *executor) releaseLockAndFlush(
@@ -318,7 +318,8 @@ func logEval(
 
 	// log evaluation result and actions status
 	evalLog.Info().
-		Str("action", string(remediate.ActionType)).
+		Interface("res", params.GetEvalResult())
+	Str("action", string(remediate.ActionType)).
 		Str("action_status", string(evalerrors.ErrorAsRemediationStatus(params.GetActionsErr().RemediateErr))).
 		Str("action", string(alert.ActionType)).
 		Str("action_status", string(evalerrors.ErrorAsAlertStatus(params.GetActionsErr().AlertErr))).
