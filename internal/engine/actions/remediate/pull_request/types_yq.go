@@ -34,7 +34,7 @@ type patternType string
 const (
 	patternTypeGlob patternType = "glob"
 
-	maxExpressionSize int = 3000
+	maxExpressionSize int = 8192
 )
 
 const (

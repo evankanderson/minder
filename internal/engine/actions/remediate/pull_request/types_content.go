@@ -26,7 +26,7 @@ const (
 	minderYQEvaluate = "minder.yq.evaluate"
 
 	// ContentBytesLimit is the maximum number of bytes for the content
-	ContentBytesLimit = 5120
+	ContentBytesLimit = 16384
 
 	// PathBytesLimit is the maximum number of bytes for the path
 	PathBytesLimit = 200
