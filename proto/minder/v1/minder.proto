@@ -11,6 +11,7 @@ import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/field_mask.proto";
 import "buf/validate/validate.proto";
+import "protoc_contrib/json/options.proto";
 
 option go_package = "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1";
 
@@ -2561,6 +2562,8 @@ message DepsType {
 message Severity {
     // Value enumerates the severity values.
     enum Value {
+        option (protoc_contrib.json.enum_skip) = true;
+
         VALUE_UNSPECIFIED = 0;
         // unknown severity means that the severity is unknown or hasn't
         // been set.
@@ -2588,6 +2591,8 @@ message Severity {
 
 // RuleTypeReleasePhase defines the release phase of the rule type.
 enum RuleTypeReleasePhase {
+    option (protoc_contrib.json.enum_skip) = true;
+
     RULE_TYPE_RELEASE_PHASE_UNSPECIFIED = 0;
     RULE_TYPE_RELEASE_PHASE_ALPHA = 1 [(name) = "alpha"];
     RULE_TYPE_RELEASE_PHASE_BETA = 2 [(name) = "beta"];

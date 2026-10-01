@@ -13,6 +13,7 @@ require (
 	github.com/norwoodj/helm-docs v1.14.2
 	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0
 	github.com/openfga/cli v0.7.20
+	github.com/protoc-contrib/protoc-gen-go-json v1.1.3
 	github.com/pseudomuto/protoc-gen-doc v1.5.1
 	github.com/sqlc-dev/sqlc v1.31.1
 	go.uber.org/mock v0.6.0

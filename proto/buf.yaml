@@ -6,6 +6,8 @@ name: buf.build/mindersec/minder
 deps:
   - buf.build/googleapis/googleapis
   - buf.build/bufbuild/protovalidate
+  - buf.build/protoc-contrib/protoc-gen-go-json
+
 breaking:
   use:
     - WIRE_JSON

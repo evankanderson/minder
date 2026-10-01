@@ -11,6 +11,7 @@ package v1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	_ "github.com/protoc-contrib/protoc-gen-go-json/protoc_contrib/json"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -15229,7 +15230,7 @@ var File_minder_v1_minder_proto protoreflect.FileDescriptor
 
 const file_minder_v1_minder_proto_rawDesc = "" +
 	"\n" +
-	"\x16minder/v1/minder.proto\x12\tminder.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a google/protobuf/field_mask.proto\x1a\x1bbuf/validate/validate.proto\"\xb0\x01\n" +
+	"\x16minder/v1/minder.proto\x12\tminder.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a google/protobuf/field_mask.proto\x1a\x1bbuf/validate/validate.proto\x1a!protoc_contrib/json/options.proto\"\xb0\x01\n" +
 	"\n" +
 	"RpcOptions\x12\x15\n" +
 	"\x06no_log\x18\x02 \x01(\bR\x05noLog\x12B\n" +
@@ -15756,9 +15757,9 @@ const file_minder_v1_minder_proto_rawDesc = "" +
 	"\x06branch\x18\x01 \x01(\tB\x1d\xbaH\x1a\xd8\x01\x01r\x15\x18\xc8\x012\x10^[[:word:]./-]+$R\x06branch\x1aQ\n" +
 	"\x12PullRequestConfigs\x12;\n" +
 	"\x06filter\x18\x01 \x01(\tB#\xbaH \xd8\x01\x01r\x1bR\x0fNEW_AND_UPDATEDR\bNEW_ONLYR\x06filterB\r\n" +
-	"\ventity_type\"\x88\x02\n" +
+	"\ventity_type\"\x8e\x02\n" +
 	"\bSeverity\x12/\n" +
-	"\x05value\x18\x01 \x01(\x0e2\x19.minder.v1.Severity.ValueR\x05value\"\xca\x01\n" +
+	"\x05value\x18\x01 \x01(\x0e2\x19.minder.v1.Severity.ValueR\x05value\"\xd0\x01\n" +
 	"\x05Value\x12\x15\n" +
 	"\x11VALUE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\rVALUE_UNKNOWN\x10\x01\x1a\v\xea\xdc\x14\aunknown\x12\x18\n" +
@@ -15769,7 +15770,7 @@ const file_minder_v1_minder_proto_rawDesc = "" +
 	"\xea\xdc\x14\x06medium\x12\x18\n" +
 	"\n" +
 	"VALUE_HIGH\x10\x05\x1a\b\xea\xdc\x14\x04high\x12 \n" +
-	"\x0eVALUE_CRITICAL\x10\x06\x1a\f\xea\xdc\x14\bcritical\"\x90(\n" +
+	"\x0eVALUE_CRITICAL\x10\x06\x1a\f\xea\xdc\x14\bcritical\x1a\x04\xe0\xf3\x1a\x01\"\x90(\n" +
 	"\bRuleType\x12&\n" +
 	"\aversion\x18\v \x01(\tB\f\xbaH\tr\a2\x05^v\\d$R\aversion\x12$\n" +
 	"\x04type\x18\f \x01(\tB\x10\xbaH\rr\v2\trule-typeR\x04type\x12 \n" +
@@ -16353,14 +16354,14 @@ const file_minder_v1_minder_proto_rawDesc = "" +
 	"\x0eENTITY_RELEASE\x10\x05\x12\x17\n" +
 	"\x13ENTITY_PIPELINE_RUN\x10\x06\x12\x13\n" +
 	"\x0fENTITY_TASK_RUN\x10\a\x12\x10\n" +
-	"\fENTITY_BUILD\x10\b*\xf9\x01\n" +
+	"\fENTITY_BUILD\x10\b*\xff\x01\n" +
 	"\x14RuleTypeReleasePhase\x12'\n" +
 	"#RULE_TYPE_RELEASE_PHASE_UNSPECIFIED\x10\x00\x12,\n" +
 	"\x1dRULE_TYPE_RELEASE_PHASE_ALPHA\x10\x01\x1a\t\xea\xdc\x14\x05alpha\x12*\n" +
 	"\x1cRULE_TYPE_RELEASE_PHASE_BETA\x10\x02\x1a\b\xea\xdc\x14\x04beta\x12&\n" +
 	"\x1aRULE_TYPE_RELEASE_PHASE_GA\x10\x03\x1a\x06\xea\xdc\x14\x02ga\x126\n" +
 	"\"RULE_TYPE_RELEASE_PHASE_DEPRECATED\x10\x04\x1a\x0e\xea\xdc\x14\n" +
-	"deprecated*\xbd\x02\n" +
+	"deprecated\x1a\x04\xe0\xf3\x1a\x01*\xbd\x02\n" +
 	"\fProviderType\x12\x1d\n" +
 	"\x19PROVIDER_TYPE_UNSPECIFIED\x10\x00\x12$\n" +
 	"\x14PROVIDER_TYPE_GITHUB\x10\x01\x1a\n" +

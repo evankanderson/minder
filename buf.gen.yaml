@@ -21,6 +21,14 @@ plugins:
     out: pkg/api/openapi
     opt:
       - disable_default_errors=true
+  - name: go-json
+
+    out: .
+    opt:
+    - orig_name=true
+    - module=github.com/mindersec/minder
+    - enums_as_ints=false
+    - allow_unknown=false
   - plugin: doc
     # Note: we can't use remote with a custom template:
     # https://github.com/pseudomuto/protoc-gen-doc/issues/513

@@ -18,6 +18,7 @@ package tools
 //go:generate go install github.com/openfga/cli/cmd/fga
 //go:generate go install github.com/mikefarah/yq/v4
 //go:generate go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+//go:generate go install github.com/protoc-contrib/protoc-gen-go-json/cmd/protoc-gen-go-json@latest
 
 // nolint
 
@@ -33,6 +34,7 @@ import (
 	_ "github.com/norwoodj/helm-docs/cmd/helm-docs"
 	_ "github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen"
 	_ "github.com/openfga/cli/cmd/fga"
+	_ "github.com/protoc-contrib/protoc-gen-go-json/cmd/protoc-gen-go-json"
 	_ "github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc"
 	_ "github.com/sqlc-dev/sqlc/cmd/sqlc"
 	_ "go.uber.org/mock/mockgen"
