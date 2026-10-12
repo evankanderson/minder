@@ -5,25 +5,31 @@ package artifact
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/mindersec/minder/internal/providers/credentials"
+	"github.com/mindersec/minder/internal/providers/dockerhub"
 	"github.com/mindersec/minder/internal/providers/github/clients"
 	mockghclient "github.com/mindersec/minder/internal/providers/github/mock"
 	"github.com/mindersec/minder/internal/providers/github/properties"
+	"github.com/mindersec/minder/internal/providers/oci"
 	"github.com/mindersec/minder/internal/providers/ratecache"
 	"github.com/mindersec/minder/internal/providers/telemetry"
+	"github.com/mindersec/minder/internal/verifier/sigstore/container"
 	"github.com/mindersec/minder/internal/verifier/verifyif"
 	mockverify "github.com/mindersec/minder/internal/verifier/verifyif/mock"
 	pb "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	evalerrors "github.com/mindersec/minder/pkg/engine/errors"
 	provinfv1 "github.com/mindersec/minder/pkg/providers/v1"
+	mock_v1 "github.com/mindersec/minder/pkg/providers/v1/mock"
 )
 
 func testGithubProvider() (provinfv1.GitHub, error) {
@@ -58,6 +64,7 @@ func TestArtifactIngestMatching(t *testing.T) {
 		mockSetup     func(*mockghclient.MockGitHub, *mockverify.MockArtifactVerifier)
 		artifact      *pb.Artifact
 		params        map[string]interface{}
+		wantIdentity  *imageRef
 	}{
 		{
 			name:          "matching-name",
@@ -90,6 +97,12 @@ func TestArtifactIngestMatching(t *testing.T) {
 			params: map[string]interface{}{
 				"name": "matching-name",
 				// missing tags means wildcard match any tag
+			},
+			wantIdentity: &imageRef{
+				Registry:   "ghcr.io",
+				Repository: "stacklok/matching-name",
+				Tags:       []string{"latest"},
+				Digest:     "sha256:1234",
 			},
 		},
 		{
@@ -124,6 +137,12 @@ func TestArtifactIngestMatching(t *testing.T) {
 			params: map[string]interface{}{
 				"name": "matching-name-and-tag",
 				"tags": []string{"latest"},
+			},
+			wantIdentity: &imageRef{
+				Registry:   "ghcr.io",
+				Repository: "stacklok/matching-name-and-tag",
+				Tags:       []string{"latest"},
+				Digest:     "sha256:1234",
 			},
 		},
 		{
@@ -181,6 +200,51 @@ func TestArtifactIngestMatching(t *testing.T) {
 			params: map[string]interface{}{
 				"name": "matching-name-but-not-tags",
 				"tags": []string{"main", "production", "dev"},
+			},
+			wantIdentity: &imageRef{
+				Registry:   "ghcr.io",
+				Repository: "stacklok/matching-name-but-not-tags",
+				Tags:       []string{"main", "production", "dev"},
+				Digest:     "sha256:1234",
+			},
+		},
+		{
+			name:          "matching-name-empty-owner",
+			wantErr:       false,
+			wantNonNilRes: true,
+			mockSetup: func(mockGhClient *mockghclient.MockGitHub, mockVerifier *mockverify.MockArtifactVerifier) {
+				mockGhClient.EXPECT().
+					GetArtifactVersions(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return([]*pb.ArtifactVersion{
+						{
+							Sha:       "sha256:1234",
+							Tags:      []string{"latest"},
+							CreatedAt: timestamppb.New(time.Now()),
+						},
+					}, nil)
+				mockVerifier.EXPECT().
+					Verify(gomock.Any(), verifyif.ArtifactTypeContainer, "", "matching-name-empty-owner", "sha256:1234").
+					Return([]verifyif.Result{
+						{
+							IsSigned:   false,
+							IsVerified: false,
+						},
+					}, nil)
+			},
+			artifact: &pb.Artifact{
+				Type: "container",
+				Name: "matching-name-empty-owner",
+				// Owner intentionally left unset: an unpopulated Owner should
+				// yield a bare-name Repository, not "/matching-name-empty-owner".
+			},
+			params: map[string]interface{}{
+				"name": "matching-name-empty-owner",
+			},
+			wantIdentity: &imageRef{
+				Registry:   "ghcr.io",
+				Repository: "matching-name-empty-owner",
+				Tags:       []string{"latest"},
+				Digest:     "sha256:1234",
 			},
 		},
 		{
@@ -247,8 +311,108 @@ func TestArtifactIngestMatching(t *testing.T) {
 			} else {
 				require.Nil(t, got, "expected nil result")
 			}
+
+			if tt.wantIdentity != nil {
+				results, ok := got.Object.([]imageInfo)
+				require.True(t, ok, "expected result object to be []imageInfo")
+				require.NotEmpty(t, results, "expected at least one result")
+
+				require.Equal(t, *tt.wantIdentity, results[0].Identity)
+			}
 		})
 	}
+}
+
+// TestArtifactIngestDockerHub runs an artifact converted by the DockerHub
+// provider through Ingest and checks the image ref the verifier would resolve.
+func TestArtifactIngestDockerHub(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "testns"
+		digest    = "sha256:1234"
+	)
+
+	dh, err := dockerhub.New(credentials.NewOAuth2TokenCredential("token"),
+		&pb.DockerHubProviderConfig{Namespace: proto.String(namespace)})
+	require.NoError(t, err)
+
+	msg, err := dh.PropertiesToProtoMessage(pb.Entity_ENTITY_ARTIFACTS,
+		oci.NewArtifactProperties("myimage:v1.2", "myimage@"+digest))
+	require.NoError(t, err)
+	art, ok := msg.(*pb.Artifact)
+	require.True(t, ok, "expected *pb.Artifact, got %T", msg)
+
+	ctrl := gomock.NewController(t)
+	mockOCI := mock_v1.NewMockOCI(ctrl)
+	mockVerifier := mockverify.NewMockArtifactVerifier(ctrl)
+
+	mockOCI.EXPECT().GetRegistry().Return(dh.GetRegistry()).AnyTimes()
+	mockOCI.EXPECT().
+		GetArtifactVersions(gomock.Any(), art, gomock.Any()).
+		Return([]*pb.ArtifactVersion{
+			{Sha: digest, Tags: []string{"v1.2"}, CreatedAt: timestamppb.New(time.Now())},
+		}, nil)
+	mockOCI.EXPECT().
+		GetRawManifest(gomock.Any(), "myimage", digest).
+		Return(nil, errors.New("not needed"))
+
+	// The real verifier builds its ref from the provider registry plus these args.
+	var gotRef string
+	mockVerifier.EXPECT().
+		Verify(gomock.Any(), verifyif.ArtifactTypeContainer, gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ verifyif.ArtifactType, owner, name, checksum string) ([]verifyif.Result, error) {
+			gotRef = container.BuildImageRef(dh.GetRegistry(), owner, name, checksum)
+			return []verifyif.Result{{}}, nil
+		})
+
+	ing, err := NewArtifactDataIngest(mockOCI)
+	require.NoError(t, err)
+	ing.artifactVerifier = mockVerifier
+
+	got, err := ing.Ingest(context.Background(), art, map[string]any{"name": "myimage"})
+	require.NoError(t, err)
+
+	require.Equal(t, "docker.io/testns/myimage@"+digest, gotRef)
+
+	results, ok := got.Object.([]imageInfo)
+	require.True(t, ok, "expected result object to be []imageInfo")
+	require.Len(t, results, 1)
+	require.Equal(t, imageRef{
+		Registry:   "docker.io",
+		Repository: "testns/myimage",
+		Tags:       []string{"v1.2"},
+		Digest:     digest,
+	}, results[0].Identity)
+}
+
+func TestGetRegistryForProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("oci-provider", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockOCI := mock_v1.NewMockOCI(ctrl)
+		mockOCI.EXPECT().GetRegistry().Return("docker.io")
+
+		require.Equal(t, "docker.io", getRegistryForProvider(mockOCI))
+	})
+
+	t.Run("github-provider", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockGH := mockghclient.NewMockGitHub(ctrl)
+
+		require.Equal(t, container.GHCRRegistry, getRegistryForProvider(mockGH))
+	})
+
+	t.Run("other-provider", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockProv := mock_v1.NewMockProvider(ctrl)
+
+		require.Equal(t, "", getRegistryForProvider(mockProv))
+	})
 }
 
 func TestSignerIdentityFromCertificate(t *testing.T) {

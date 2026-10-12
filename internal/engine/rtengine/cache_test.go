@@ -146,6 +146,8 @@ func TestNewRuleTypeEngineCacheConstructor(t *testing.T) {
 func TestGetRuleEngine(t *testing.T) {
 	t.Parallel()
 
+	projectID := uuid.New()
+
 	scenarios := []struct {
 		Name            string
 		Cache           cacheType
@@ -160,38 +162,46 @@ func TestGetRuleEngine(t *testing.T) {
 		{
 			Name:          "Returns error when rule type does not exist",
 			Cache:         cacheType{},
-			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(nil, sql.ErrNoRows)),
+			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(nil, projectID, sql.ErrNoRows)),
 			ExpectedError: "unknown rule type with ID",
 		},
 		{
 			Name:          "Returns error when rule type lookup fails",
 			Cache:         cacheType{},
-			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(nil, errTest)),
+			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(nil, projectID, errTest)),
 			ExpectedError: "error creating rule type engine",
 		},
 		{
 			Name:          "Returns error when rule type cannot be parsed",
 			Cache:         cacheType{},
-			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(&db.RuleType{}, nil)),
+			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(&db.RuleType{}, projectID, nil)),
 			ExpectedError: "error parsing rule type when parsing rule type",
 		},
 		{
 			Name:          "Returns error when rule type engine cannot be instantiated",
 			Cache:         cacheType{},
-			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(&malformedRuleType, nil)),
+			DBSetup:       dbf.NewDBMock(withRuleTypeLookup(&malformedRuleType, projectID, nil)),
 			ExpectedError: "error creating rule type engine",
 		},
 		{
 			Name:    "Creates rule type engine for missing rule type and caches it",
 			Cache:   cacheType{},
-			DBSetup: dbf.NewDBMock(withRuleTypeLookup(&ruleType, nil)),
+			DBSetup: dbf.NewDBMock(withRuleTypeLookup(&ruleType, projectID, nil)),
 		},
 		{
 			Name:            "Returns error when building data source registry fails",
 			Cache:           cacheType{},
-			DBSetup:         dbf.NewDBMock(withRuleTypeLookup(&ruleType, nil)),
+			DBSetup:         dbf.NewDBMock(withRuleTypeLookup(&ruleType, projectID, nil)),
 			dsRegistryError: errTest,
 			ExpectedError:   errTest.Error(),
+		},
+		{
+			Name:  "Returns error when reading project hierarchy fails",
+			Cache: cacheType{},
+			DBSetup: dbf.NewDBMock(func(mock dbf.DBMock) {
+				mock.EXPECT().GetParentProjects(gomock.Any(), projectID).Return(nil, errTest)
+			}),
+			ExpectedError: errTest.Error(),
 		},
 	}
 
@@ -222,7 +232,7 @@ func TestGetRuleEngine(t *testing.T) {
 				dssvc:       dssvc,
 			}
 
-			result, err := cache.GetRuleEngine(ctx, ruleTypeID)
+			result, err := cache.GetRuleEngine(ctx, projectID, ruleTypeID)
 			if scenario.ExpectedError != "" {
 				require.ErrorContains(t, err, scenario.ExpectedError)
 				require.Nil(t, result)
@@ -238,6 +248,59 @@ func TestGetRuleEngine(t *testing.T) {
 	}
 }
 
+// TestNewRuleEngineCache_ProviderTraits verifies that NewRuleEngineCache
+// caches every rule type in the project hierarchy regardless of whether its
+// provider_traits are satisfied: unsatisfied rule types are still
+// constructed and cached, just marked as unsupported, rather than being
+// excluded from the cache or aborting the whole population loop.
+func TestNewRuleEngineCache_ProviderTraits(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	ctx := context.Background()
+
+	noTraitsID := uuid.New()
+	satisfiedTraitsID := uuid.New()
+	unsatisfiedTraitsID := uuid.New()
+	projectID := uuid.New()
+
+	store := dbf.NewDBMock(func(mock dbf.DBMock) {
+		mock.EXPECT().GetParentProjects(gomock.Any(), gomock.Any()).
+			Return([]uuid.UUID{projectID}, nil)
+		mock.EXPECT().GetRuleTypesByEntityInHierarchy(gomock.Any(), gomock.Any()).
+			Return([]db.RuleType{
+				{ID: noTraitsID, ProjectID: projectID, Definition: []byte(ruleDefJSON)},
+				{ID: satisfiedTraitsID, ProjectID: projectID, Definition: []byte(ruleDefJSONWithGitTrait)},
+				{ID: unsatisfiedTraitsID, ProjectID: projectID, Definition: []byte(ruleDefJSONWithGithubTrait)},
+			}, nil)
+	})(ctrl)
+
+	dssvc := mockdssvc.NewMockDataSourcesService(ctrl)
+	dssvc.EXPECT().BuildDataSourceRegistry(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(v1datasources.NewDataSourceRegistry(), nil).Times(3)
+
+	cache, err := NewRuleEngineCache(
+		ctx, store, db.EntitiesRepository, projectID,
+		testproviders.NewGitProvider(nil), nil, ingestcache.NewNoopCache(),
+		dssvc)
+	require.NoError(t, err)
+	require.NotNil(t, cache)
+
+	impl, ok := cache.(*ruleEngineCache)
+	require.True(t, ok)
+	require.Len(t, impl.engines, 3)
+
+	require.Contains(t, impl.engines, noTraitsID)
+	require.True(t, impl.engines[noTraitsID].SupportedByProvider())
+
+	require.Contains(t, impl.engines, satisfiedTraitsID)
+	require.True(t, impl.engines[satisfiedTraitsID].SupportedByProvider())
+
+	require.Contains(t, impl.engines, unsatisfiedTraitsID)
+	require.False(t, impl.engines[unsatisfiedTraitsID].SupportedByProvider())
+}
+
 var (
 	ruleTypeID = uuid.New()
 	errTest    = errors.New("error in rule type engine cache test")
@@ -251,14 +314,18 @@ var (
 	}
 )
 
-func withRuleTypeLookup(ruleType *db.RuleType, err error) func(dbf.DBMock) {
+func withRuleTypeLookup(ruleType *db.RuleType, projectID uuid.UUID, err error) func(dbf.DBMock) {
 	return func(mock dbf.DBMock) {
 		var rt db.RuleType
 		if ruleType != nil {
 			rt = *ruleType
 		}
+		mock.EXPECT().GetParentProjects(gomock.Any(), projectID).Return([]uuid.UUID{projectID}, nil)
 		mock.EXPECT().
-			GetRuleTypeByID(gomock.Any(), ruleTypeID).
+			GetRuleTypeByID(gomock.Any(), db.GetRuleTypeByIDParams{
+				ID:       ruleTypeID,
+				Projects: []uuid.UUID{projectID},
+			}).
 			Return(rt, err)
 	}
 }
@@ -288,6 +355,45 @@ const brokenRuleDef = `
 	"ingest": {
 		"type": "git",
         "git": {}
+	}
+}
+`
+
+// same as ruleDefJSON, but requires the "git" provider trait
+const ruleDefJSONWithGitTrait = `
+{
+	"rule_schema": {},
+	"provider_traits": ["git"],
+	"ingest": {
+		"type": "git",
+        "git": {}
+	},
+	"eval": {
+		"type": "jq",
+		"jq": [{
+			"ingested": {"def": ".abc"},
+			"profile": {"def": ".xyz"}
+		}]
+	}
+}
+`
+
+// same as ruleDefJSON, but requires the "github" provider trait, which
+// testproviders.GitProvider does not implement
+const ruleDefJSONWithGithubTrait = `
+{
+	"rule_schema": {},
+	"provider_traits": ["github"],
+	"ingest": {
+		"type": "git",
+        "git": {}
+	},
+	"eval": {
+		"type": "jq",
+		"jq": [{
+			"ingested": {"def": ".abc"},
+			"profile": {"def": ".xyz"}
+		}]
 	}
 }
 `

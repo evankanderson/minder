@@ -20,13 +20,11 @@ import (
 	"github.com/mindersec/minder/internal/db"
 	"github.com/mindersec/minder/internal/engine/engcontext"
 	"github.com/mindersec/minder/internal/engine/entities"
-	entmodels "github.com/mindersec/minder/internal/entities/models"
 	propSvc "github.com/mindersec/minder/internal/entities/properties/service"
 	"github.com/mindersec/minder/internal/logger"
 	ghprop "github.com/mindersec/minder/internal/providers/github/properties"
 	"github.com/mindersec/minder/internal/util"
 	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
-	"github.com/mindersec/minder/pkg/entities/properties"
 	prof "github.com/mindersec/minder/pkg/profiles"
 	"github.com/mindersec/minder/pkg/ruletypes"
 )
@@ -37,7 +35,8 @@ const requestKey contextKey = "request"
 
 // CreateProfile creates a profile for a project
 func (s *Server) CreateProfile(ctx context.Context,
-	cpr *minderv1.CreateProfileRequest) (*minderv1.CreateProfileResponse, error) {
+	cpr *minderv1.CreateProfileRequest,
+) (*minderv1.CreateProfileResponse, error) {
 	in := cpr.GetProfile()
 	if err := in.Validate(); err != nil {
 		if errors.Is(err, minderv1.ErrValidationFailed) {
@@ -71,7 +70,8 @@ func (s *Server) CreateProfile(ctx context.Context,
 
 // DeleteProfile is a method to delete a profile
 func (s *Server) DeleteProfile(ctx context.Context,
-	in *minderv1.DeleteProfileRequest) (*minderv1.DeleteProfileResponse, error) {
+	in *minderv1.DeleteProfileRequest,
+) (*minderv1.DeleteProfileResponse, error) {
 	entityCtx := engcontext.EntityFromContext(ctx)
 
 	err := entityCtx.ValidateProject(ctx, s.store)
@@ -95,7 +95,8 @@ func (s *Server) DeleteProfile(ctx context.Context,
 
 // ListProfiles is a method to get all profiles for a project
 func (s *Server) ListProfiles(ctx context.Context,
-	req *minderv1.ListProfilesRequest) (*minderv1.ListProfilesResponse, error) {
+	req *minderv1.ListProfilesRequest,
+) (*minderv1.ListProfilesResponse, error) {
 	entityCtx := engcontext.EntityFromContext(ctx)
 
 	err := entityCtx.ValidateProject(ctx, s.store)
@@ -116,7 +117,6 @@ func (s *Server) ListProfiles(ctx context.Context,
 	}
 
 	var resp minderv1.ListProfilesResponse
-	resp.Profiles = make([]*minderv1.Profile, 0, len(profiles))
 	profileMap := prof.MergeDatabaseListIntoProfiles(profiles)
 
 	// Sort the profiles by name to get a consistent order. This is important for UI.
@@ -126,6 +126,7 @@ func (s *Server) ListProfiles(ctx context.Context,
 	}
 	sort.Strings(profileNames)
 
+	resp.Profiles = make([]*minderv1.Profile, 0, len(profileNames))
 	for _, prfName := range profileNames {
 		profile := profileMap[prfName]
 		resp.Profiles = append(resp.Profiles, profile)
@@ -139,8 +140,8 @@ func (s *Server) ListProfiles(ctx context.Context,
 
 // GetProfileById is a method to get a profile by id
 func (s *Server) GetProfileById(ctx context.Context,
-	in *minderv1.GetProfileByIdRequest) (*minderv1.GetProfileByIdResponse, error) {
-
+	in *minderv1.GetProfileByIdRequest,
+) (*minderv1.GetProfileByIdResponse, error) {
 	entityCtx := engcontext.EntityFromContext(ctx)
 
 	err := entityCtx.ValidateProject(ctx, s.store)
@@ -173,7 +174,8 @@ func (s *Server) GetProfileById(ctx context.Context,
 
 // GetProfileByName implements the RPC method for getting a profile by name
 func (s *Server) GetProfileByName(ctx context.Context,
-	in *minderv1.GetProfileByNameRequest) (*minderv1.GetProfileByNameResponse, error) {
+	in *minderv1.GetProfileByNameRequest,
+) (*minderv1.GetProfileByNameResponse, error) {
 	entityCtx := engcontext.EntityFromContext(ctx)
 
 	err := entityCtx.ValidateProject(ctx, s.store)
@@ -246,53 +248,9 @@ func getProfilePBFromDB(
 	return nil, fmt.Errorf("profile not found")
 }
 
-// TODO: We need to replace this with a more generic method that can be used for all entities
-// probably coming from the properties.
-func getRuleEvalEntityInfo(
-	rs db.ListRuleEvaluationsByProfileIdRow,
-	efp *entmodels.EntityWithProperties,
-) map[string]string {
-	entityInfo := map[string]string{}
-
-	if name := efp.Properties.GetProperty(properties.PropertyName); name != nil {
-		entityInfo["name"] = name.GetString()
-	}
-
-	if owner := efp.Properties.GetProperty(ghprop.RepoPropertyOwner); owner != nil {
-		entityInfo["repo_owner"] = owner.GetString()
-	}
-	if name := efp.Properties.GetProperty(ghprop.RepoPropertyName); name != nil {
-		entityInfo["repo_name"] = name.GetString()
-	}
-
-	if artName := efp.Properties.GetProperty(ghprop.ArtifactPropertyName); artName != nil {
-		entityInfo["artifact_name"] = artName.GetString()
-	}
-
-	if artType := efp.Properties.GetProperty(ghprop.ArtifactPropertyType); artType != nil {
-		entityInfo["artifact_type"] = artType.GetString()
-	}
-
-	entityInfo["provider"] = rs.Provider
-	entityInfo["entity_type"] = efp.Entity.Type.ToString()
-	entityInfo["entity_id"] = rs.EntityID.String()
-
-	// temporary: These will be replaced by entity_id
-	//nolint:exhaustive
-	switch rs.EntityType {
-	case db.EntitiesRepository:
-		entityInfo["repository_id"] = efp.Entity.ID.String()
-	case db.EntitiesArtifact:
-		entityInfo["artifact_id"] = efp.Entity.ID.String()
-	default:
-		// We only need to handle the above two types specially for historical compatibility.
-	}
-
-	return entityInfo
-}
-
 func (s *Server) getRuleEvaluationStatuses(
 	ctx context.Context,
+	projectID uuid.UUID,
 	dbRuleEvaluationStatuses []db.ListRuleEvaluationsByProfileIdRow,
 	profileId string,
 ) []*minderv1.RuleEvaluationStatus {
@@ -302,7 +260,7 @@ func (s *Server) getRuleEvaluationStatuses(
 	// Loop through the rule evaluation statuses and convert them to protobuf
 	for _, dbRuleEvalStat := range dbRuleEvaluationStatuses {
 		// Get the rule evaluation status
-		st, err := s.getRuleEvalStatus(ctx, profileId, dbRuleEvalStat)
+		st, err := s.getRuleEvalStatus(ctx, projectID, profileId, dbRuleEvalStat)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) || errors.Is(err, propSvc.ErrEntityNotFound) {
 				zerolog.Ctx(ctx).Error().
@@ -331,6 +289,7 @@ func (s *Server) getRuleEvaluationStatuses(
 //nolint:gocyclo
 func (s *Server) getRuleEvalStatus(
 	ctx context.Context,
+	projectID uuid.UUID,
 	profileID string,
 	dbRuleEvalStat db.ListRuleEvaluationsByProfileIdRow,
 ) (*minderv1.RuleEvaluationStatus, error) {
@@ -338,7 +297,7 @@ func (s *Server) getRuleEvalStatus(
 	var guidance string
 	var err error
 
-	// the caller just ignores allt the errors anyway, so we don't start a transaction as the integrity issues
+	// the caller just ignores all the errors anyway, so we don't start a transaction as the integrity issues
 	// would not be discovered anyway
 	efp, err := s.props.EntityWithPropertiesByID(ctx, dbRuleEvalStat.EntityID, nil)
 	if err != nil {
@@ -353,7 +312,10 @@ func (s *Server) getRuleEvalStatus(
 
 	if dbRuleEvalStat.EvalStatus == db.EvalStatusTypesFailure ||
 		dbRuleEvalStat.EvalStatus == db.EvalStatusTypesError {
-		ruleTypeInfo, err := s.store.GetRuleTypeByID(ctx, dbRuleEvalStat.RuleTypeID)
+		ruleTypeInfo, err := s.store.GetRuleTypeByID(ctx, db.GetRuleTypeByIDParams{
+			Projects: []uuid.UUID{projectID},
+			ID:       dbRuleEvalStat.RuleTypeID,
+		})
 		if err != nil {
 			l.Err(err).Msg("error getting rule type info from db")
 		} else {
@@ -448,8 +410,8 @@ func (s *Server) getRuleEvalStatus(
 
 // GetProfileStatusByProject is a method to get profile status for a project
 func (s *Server) GetProfileStatusByProject(ctx context.Context,
-	_ *minderv1.GetProfileStatusByProjectRequest) (*minderv1.GetProfileStatusByProjectResponse, error) {
-
+	_ *minderv1.GetProfileStatusByProjectRequest,
+) (*minderv1.GetProfileStatusByProjectResponse, error) {
 	entityCtx := engcontext.EntityFromContext(ctx)
 
 	err := entityCtx.ValidateProject(ctx, s.store)
@@ -513,7 +475,8 @@ func (s *Server) PatchProfile(ctx context.Context, ppr *minderv1.PatchProfileReq
 
 // UpdateProfile updates a profile for a project
 func (s *Server) UpdateProfile(ctx context.Context,
-	cpr *minderv1.UpdateProfileRequest) (*minderv1.UpdateProfileResponse, error) {
+	cpr *minderv1.UpdateProfileRequest,
+) (*minderv1.UpdateProfileResponse, error) {
 	in := cpr.GetProfile()
 
 	entityCtx := engcontext.EntityFromContext(ctx)
@@ -526,7 +489,6 @@ func (s *Server) UpdateProfile(ctx context.Context,
 	updatedProfile, err := db.WithTransaction(s.store, func(qtx db.ExtendQuerier) (*minderv1.Profile, error) {
 		return s.profiles.UpdateProfile(ctx, entityCtx.Project.ID, uuid.Nil, in, qtx)
 	})
-
 	if err != nil {
 		// assumption: service layer sets sensible errors
 		return nil, err
@@ -556,7 +518,7 @@ func (s *Server) GetProfileStatusByName(
 	}
 
 	dbProfileStatus, err := s.store.GetProfileStatusByNameAndProject(ctx, db.GetProfileStatusByNameAndProjectParams{
-		ProjectID: engcontext.EntityFromContext(ctx).Project.ID,
+		ProjectID: entityCtx.Project.ID,
 		Name:      in.Name,
 	})
 	if err != nil {
@@ -566,7 +528,7 @@ func (s *Server) GetProfileStatusByName(
 		return nil, status.Errorf(codes.Unknown, "failed to get profile: %s", err)
 	}
 
-	resp, err := s.processProfileStatusByName(ctx, dbProfileStatus.Name, dbProfileStatus.ID,
+	resp, err := s.processProfileStatusByName(ctx, dbProfileStatus.Name, entityCtx.Project.ID, dbProfileStatus.ID,
 		timestamppb.New(dbProfileStatus.LastUpdated), string(dbProfileStatus.ProfileStatus), in)
 	if err != nil {
 		return nil, err
@@ -596,7 +558,7 @@ func (s *Server) GetProfileStatusById(
 	}
 
 	dbProfileStatus, err := s.store.GetProfileStatusByIdAndProject(ctx, db.GetProfileStatusByIdAndProjectParams{
-		ProjectID: engcontext.EntityFromContext(ctx).Project.ID,
+		ProjectID: entityCtx.Project.ID,
 		ID:        uuid.MustParse(in.Id),
 	})
 	if err != nil {
@@ -606,7 +568,7 @@ func (s *Server) GetProfileStatusById(
 		return nil, status.Errorf(codes.Unknown, "failed to get profile: %s", err)
 	}
 
-	resp, err := s.processProfileStatusById(ctx, dbProfileStatus.Name, dbProfileStatus.ID,
+	resp, err := s.processProfileStatusById(ctx, dbProfileStatus.Name, entityCtx.Project.ID, dbProfileStatus.ID,
 		timestamppb.New(dbProfileStatus.LastUpdated), string(dbProfileStatus.ProfileStatus), in)
 	if err != nil {
 		return nil, err
@@ -621,6 +583,7 @@ func (s *Server) GetProfileStatusById(
 func (s *Server) processProfileStatusByName(
 	ctx context.Context,
 	profileName string,
+	projectID uuid.UUID,
 	profileID uuid.UUID,
 	lastUpdated *timestamppb.Timestamp,
 	profileStatus string,
@@ -657,7 +620,7 @@ func (s *Server) processProfileStatusByName(
 		}
 
 		ruleEvaluationStatuses = s.getRuleEvaluationStatuses(
-			ctx, dbRuleEvaluationStatuses, profileID.String(),
+			ctx, projectID, dbRuleEvaluationStatuses, profileID.String(),
 		)
 	}
 
@@ -675,6 +638,7 @@ func (s *Server) processProfileStatusByName(
 func (s *Server) processProfileStatusById(
 	ctx context.Context,
 	profileName string,
+	projectID uuid.UUID,
 	profileID uuid.UUID,
 	lastUpdated *timestamppb.Timestamp,
 	profileStatus string,
@@ -712,7 +676,7 @@ func (s *Server) processProfileStatusById(
 		}
 
 		ruleEvaluationStatuses = s.getRuleEvaluationStatuses(
-			ctx, dbRuleEvaluationStatuses, profileID.String(),
+			ctx, projectID, dbRuleEvaluationStatuses, profileID.String(),
 		)
 	}
 

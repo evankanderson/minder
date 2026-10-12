@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -105,6 +106,9 @@ type Provider interface {
 	// and the engine, but for now, each provider may have a custom mapping here for each
 	// supported message type.
 	PropertiesToProtoMessage(entType minderv1.Entity, props *properties.Properties) (protoreflect.ProtoMessage, error)
+
+	// CanImplement returns true if the provider implements the given trait.
+	CanImplement(trait minderv1.ProviderType) bool
 }
 
 // Git is the interface for git providers
@@ -200,6 +204,43 @@ type ReviewPublisher interface {
 	GetPullRequest(ctx context.Context, owner, repo string, prNumber int) (*github.PullRequest, error)
 }
 
+// IssuePublisher is the interface for providers that can publish issues.
+type IssuePublisher interface {
+	Provider
+
+	// CreateIssue creates an issue in the given repository.
+	CreateIssue(
+		ctx context.Context,
+		owner, repo string,
+		title string,
+		body string,
+		labels []string,
+		assignees []string,
+	) (*github.Issue, error)
+
+	// GetIssue gets an issue from the given repository
+	GetIssue(
+		ctx context.Context,
+		owner, repo string,
+		number int,
+	) (*github.Issue, error)
+
+	// CloseIssue closes an existing issue
+	CloseIssue(
+		ctx context.Context,
+		owner, repo string,
+		number int,
+		comment string,
+	) (*github.Issue, error)
+
+	// ReopenIssue reopens an existing issue
+	ReopenIssue(
+		ctx context.Context,
+		owner, repo string,
+		number int,
+	) (*github.Issue, error)
+}
+
 // GitHub is the interface for interacting with the GitHub REST API
 // Add methods here for interacting with the GitHub Rest API
 type GitHub interface {
@@ -237,6 +278,11 @@ type GitHub interface {
 	CreatePullRequest(ctx context.Context, owner, repo, title, body, head, base string) (*github.PullRequest, error)
 	ClosePullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
 	ListPullRequests(ctx context.Context, owner, repo string, opt *github.PullRequestListOptions) ([]*github.PullRequest, error)
+	CreateIssue(ctx context.Context, owner, repo string, title string, body string, labels []string,
+		assignees []string) (*github.Issue, error)
+	GetIssue(ctx context.Context, owner, repo string, number int) (*github.Issue, error)
+	CloseIssue(ctx context.Context, owner, repo string, number int, comment string) (*github.Issue, error)
+	ReopenIssue(ctx context.Context, owner, repo string, number int) (*github.Issue, error)
 	GetUserId(ctx context.Context) (int64, error)
 	GetName(ctx context.Context) (string, error)
 	GetLogin(ctx context.Context) (string, error)
@@ -251,6 +297,17 @@ type GitHub interface {
 	UpdateCheckRun(context.Context, string, string, int64, *github.UpdateCheckRunOptions) (*github.CheckRun, error)
 }
 
+// GitLab is the interface for interacting with the GitLab REST API
+// Add methods here for interacting with the GitLab REST API
+type GitLab interface {
+	Provider
+	RepoLister
+	REST
+	Git
+
+	GetCredential() GitLabCredential
+}
+
 // ImageLister is the interface for listing images
 type ImageLister interface {
 	Provider
@@ -260,6 +317,14 @@ type ImageLister interface {
 
 	// GetNamespaceURL returns the repository URL
 	GetNamespaceURL() string
+}
+
+// RawManifest captures an OCI manifest or image index exactly as returned by
+// the registry, without resolving a multi-platform index down to a single
+// platform's manifest.
+type RawManifest struct {
+	v1.Descriptor
+	Content []byte `json:"content"`
 }
 
 // OCI is the interface for interacting with OCI registries
@@ -286,6 +351,11 @@ type OCI interface {
 
 	// GetAuthenticator returns the authenticator for the OCI provider
 	GetAuthenticator() (authn.Authenticator, error)
+
+	// GetRawManifest returns the manifest or image index exactly as
+	// returned by the registry, keyed by digest. Unlike GetManifest, it
+	// does not resolve a multi-platform index down to a single platform.
+	GetRawManifest(ctx context.Context, name, digest string) (*RawManifest, error)
 }
 
 // ParseAndValidate parses the given provider configuration and validates it.
@@ -300,6 +370,31 @@ func ParseAndValidate(rawConfig json.RawMessage, to any) error {
 	}
 
 	return nil
+}
+
+// providerTypeMap maps each ProviderType to the interface type that a provider
+// must implement to support it.
+var providerTypeMap = map[minderv1.ProviderType]reflect.Type{
+	minderv1.ProviderType_PROVIDER_TYPE_GITHUB:       reflect.TypeOf((*GitHub)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_GITLAB:       reflect.TypeOf((*GitLab)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_REST:         reflect.TypeOf((*REST)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_GIT:          reflect.TypeOf((*Git)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_OCI:          reflect.TypeOf((*OCI)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_REPO_LISTER:  reflect.TypeOf((*RepoLister)(nil)).Elem(),
+	minderv1.ProviderType_PROVIDER_TYPE_IMAGE_LISTER: reflect.TypeOf((*ImageLister)(nil)).Elem(),
+}
+
+// ProviderTypesFromImpl returns the set of ProviderType values supported by the given
+// Provider, determined by checking which interfaces it implements.
+func ProviderTypesFromImpl(p Provider) []minderv1.ProviderType {
+	t := reflect.TypeOf(p)
+	out := make([]minderv1.ProviderType, 0, len(providerTypeMap))
+	for ptype, iface := range providerTypeMap {
+		if t.Implements(iface) {
+			out = append(out, ptype)
+		}
+	}
+	return out
 }
 
 // As is a type-cast function for Providers

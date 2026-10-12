@@ -6,6 +6,8 @@ package flags
 const (
 	// DockerHubProvider enables the DockerHub provider.
 	DockerHubProvider Experiment = "dockerhub_provider"
+	// QuayProvider enables the Quay.io provider.
+	QuayProvider Experiment = "quay_provider"
 	// GitLabProvider enables the GitLab provider.
 	GitLabProvider Experiment = "gitlab_provider"
 	// AlternateMessageDriver enables an an alternate message driver.
@@ -14,8 +16,7 @@ const (
 	ProjectCreateDelete Experiment = "project_create_delete"
 	// AuthenticatedDataSources enables provider authentication for data sources.
 	AuthenticatedDataSources Experiment = "authenticated_datasources"
-	// RegoV1DualParse enables dual-parse version detection (try V1, fall back
-	// to V0) when creating or updating rule types. When disabled, all rule
-	// types are treated as Rego V0.
-	RegoV1DualParse Experiment = "rego_v1_dual_parse"
+	// RegoV1RefuseV0 rejects V0-only Rego when creating or updating rule
+	// types.
+	RegoV1RefuseV0 Experiment = "rego_v1_refuse_v0"
 )

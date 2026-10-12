@@ -16,35 +16,28 @@ import (
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/osfs"
+	billyutil "github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/google/go-github/v63/github"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/mindersec/minder/internal/engine/interfaces"
-	"github.com/mindersec/minder/internal/providers/credentials"
-	"github.com/mindersec/minder/internal/providers/github/clients"
 	mockghclient "github.com/mindersec/minder/internal/providers/github/mock"
-	"github.com/mindersec/minder/internal/providers/github/properties"
-	"github.com/mindersec/minder/internal/providers/ratecache"
-	"github.com/mindersec/minder/internal/providers/telemetry"
 	pb "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	"github.com/mindersec/minder/pkg/engine/errors"
 	interfaces2 "github.com/mindersec/minder/pkg/engine/v1/interfaces"
 	"github.com/mindersec/minder/pkg/profiles/models"
-	provifv1 "github.com/mindersec/minder/pkg/providers/v1"
 )
 
 const (
-	ghApiUrl = "https://api.github.com"
-
 	repoOwner   = "stacklok"
 	repoName    = "minder"
 	dflBranchTo = "main"
@@ -84,21 +77,6 @@ jobs:
 )
 
 var TestActionTypeValid interfaces.ActionType = "remediate-test"
-
-func testGithubProvider() (provifv1.GitHub, error) {
-	return clients.NewRestClient(
-		&pb.GitHubProviderConfig{
-			Endpoint: proto.String(ghApiUrl + "/"),
-		},
-		nil,
-		nil,
-		&ratecache.NoopRestClientCache{},
-		credentials.NewGitHubTokenCredential("token"),
-		clients.NewGitHubClientFactory(telemetry.NewNoopMetrics()),
-		properties.NewPropertyFetcherFactory(),
-		"",
-	)
-}
 
 func dependabotPrRem() *pb.RuleType_Definition_Remediate_PullRequestRemediation {
 	return &pb.RuleType_Definition_Remediate_PullRequestRemediation{
@@ -251,8 +229,8 @@ func resolveActionMockSetup(t *testing.T, mockGitHub *mockghclient.MockGitHub, u
 			Body:       io.NopCloser(bytes.NewBuffer(jsonCheckoutRef)),
 			StatusCode: http.StatusOK,
 		}, nil)
-
 }
+
 func mockRepoSetup(t *testing.T, postSetupHooks ...hookFunc) (*git.Repository, error) {
 	t.Helper()
 
@@ -666,7 +644,6 @@ func TestPullRequestRemediate(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -677,10 +654,8 @@ func TestPullRequestRemediate(t *testing.T) {
 
 			mockClient := mockghclient.NewMockGitHub(ctrl)
 
-			provider, err := testGithubProvider()
-			require.NoError(t, err)
 			engine, err := NewPullRequestRemediate(
-				tt.newRemArgs.actionType, tt.newRemArgs.prRem, provider, tt.remArgs.remAction)
+				tt.newRemArgs.actionType, tt.newRemArgs.prRem, mockClient, tt.remArgs.remAction)
 			if tt.wantInitErr {
 				require.Error(t, err, "expected error")
 				return
@@ -726,4 +701,62 @@ func TestPullRequestRemediate(t *testing.T) {
 			require.Equal(t, tt.expectedMetadata, retMeta)
 		})
 	}
+}
+
+func TestCheckoutToOriginallyFetchedBranch_CleansWorktree(t *testing.T) {
+	t.Parallel()
+
+	mfs := memfs.New()
+	storer := memory.NewStorage()
+	repo, err := git.InitWithOptions(storer, mfs, git.InitOptions{
+		DefaultBranch: "refs/heads/main",
+	})
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create an initial commit on main so we have a valid HEAD.
+	require.NoError(t, billyutil.WriteFile(mfs, "README.md", []byte("initial"), 0o644))
+
+	_, err = wt.Add("README.md")
+	require.NoError(t, err)
+	_, err = wt.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "test", Email: "t@t.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+
+	mainRef := plumbing.NewBranchReferenceName("main")
+
+	// Checkout a remediation branch and simulate a partial failure:
+	// modify a tracked file and create an untracked file without committing.
+	err = wt.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("minder_remediation"),
+		Create: true,
+	})
+	require.NoError(t, err)
+
+	// Dirty a tracked file (simulates remediation writing a compliant version).
+	require.NoError(t, billyutil.WriteFile(mfs, "README.md", []byte("dirty content from failed remediation"), 0o644))
+
+	// Create an untracked file (simulates remediation creating a new config).
+	require.NoError(t, billyutil.WriteFile(mfs, "leftover.txt", []byte("should be removed"), 0o644))
+
+	// Verify the worktree is actually dirty before we clean it.
+	status, err := wt.Status()
+	require.NoError(t, err)
+	require.False(t, status.IsClean(), "worktree should be dirty before cleanup")
+
+	// Run checkoutToOriginallyFetchedBranch — this is the code under test.
+	logger := zerolog.Nop()
+	checkoutToOriginallyFetchedBranch(&logger, wt, mainRef)
+
+	// Assert: worktree should now be clean.
+	status, err = wt.Status()
+	require.NoError(t, err)
+	require.True(t, status.IsClean(), "worktree should be clean after checkout with Force + Clean")
+
+	// Assert: untracked file should have been removed by wt.Clean.
+	_, err = mfs.Stat("leftover.txt")
+	require.Error(t, err, "untracked file should have been removed by Clean")
 }

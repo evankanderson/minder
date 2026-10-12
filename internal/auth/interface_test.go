@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
 type identityTestCase struct {
@@ -137,6 +137,11 @@ func (s *StaticIDP) Resolve(_ context.Context, id string) (*Identity, error) {
 	return nil, errors.New("not found")
 }
 
+// ResolveFederated implements IdentityProvider.
+func (*StaticIDP) ResolveFederated(_ context.Context, _, _ string) (*Identity, error) {
+	return nil, ErrNotFound
+}
+
 // String implements IdentityProvider.
 func (s *StaticIDP) String() string {
 	return s.name
@@ -154,9 +159,11 @@ func (s *StaticIDP) URL() url.URL {
 // Validate implements IdentityProvider.
 func (s *StaticIDP) Validate(_ context.Context, token jwt.Token) (*Identity, error) {
 	sURL := s.URL()
-	if token.Subject() == s.wantId && token.Issuer() == sURL.String() {
+	sub, _ := token.Subject()
+	iss, _ := token.Issuer()
+	if sub == s.wantId && iss == sURL.String() {
 		return &Identity{
-			UserID:    token.Subject(),
+			UserID:    sub,
 			HumanName: s.human,
 			Provider:  s,
 		}, nil

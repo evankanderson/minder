@@ -7,10 +7,12 @@ package fileconvert
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -29,8 +31,26 @@ type Decoder interface {
 	Decode(v any) error
 }
 
-var _ Decoder = (*yaml.Decoder)(nil)
-var _ Decoder = (*json.Decoder)(nil)
+var (
+	_ Decoder = (*yaml.Decoder)(nil)
+	_ Decoder = (*json.Decoder)(nil)
+)
+
+var (
+	// ErrResourceTypeNotFound is returned when the input has no `type` field.
+	ErrResourceTypeNotFound = errors.New("resource type not found")
+	// ErrUnknownResourceType is returned when the input's `type` is not a Minder resource type.
+	ErrUnknownResourceType = errors.New("unknown resource type")
+	// ErrUnexpectedResourceType is returned by ReadResourceTyped when the resource is not of the requested type.
+	ErrUnexpectedResourceType = errors.New("unexpected resource type")
+)
+
+// Keep in sync with the switch in ReadResource.
+var knownResourceTypes = []string{
+	string(minderv1.ProfileResource),
+	string(minderv1.RuleTypeResource),
+	string(minderv1.DataSourceResource),
+}
 
 // DecoderForFile returns a Decoder for the file at the specified path,
 // or nil if the file is not of the appropriate type.
@@ -44,6 +64,8 @@ func DecoderForFile(path string) (Decoder, io.Closer) {
 		builder = func(r io.Reader) Decoder { return json.NewDecoder(r) }
 	case ".yaml", ".yml":
 		builder = func(r io.Reader) Decoder { return yaml.NewDecoder(r) }
+	case ".rego":
+		builder = func(r io.Reader) Decoder { return &regoDecoder{filename: path, file: r} }
 	default:
 		return nil, nil
 	}
@@ -65,6 +87,7 @@ func DecoderForFile(path string) (Decoder, io.Closer) {
 func WriteResource(output Encoder, resource minderv1.ResourceMeta) error {
 	var jsonData []byte
 	var err error
+	marshaller := protojson.MarshalOptions{UseProtoNames: true}
 	switch r := resource.(type) {
 	case *minderv1.Profile:
 		r.Type = string(minderv1.ProfileResource)
@@ -72,17 +95,14 @@ func WriteResource(output Encoder, resource minderv1.ResourceMeta) error {
 	case *minderv1.RuleType:
 		r.Type = string(minderv1.RuleTypeResource)
 		r.Version = "v1"
-		// RuleTypes have customized enum fields (used only during file/IO).
-		// Preserve this behavior (at least for now).
-		jsonData, err = json.Marshal(r)
+		jsonData, err = marshalRuleType(marshaller, r)
 	case *minderv1.DataSource:
 		r.Type = string(minderv1.DataSourceResource)
 		r.Version = "v1"
 	default:
 		return fmt.Errorf("unknown resource type: %T", resource)
 	}
-	if jsonData == nil {
-		marshaller := protojson.MarshalOptions{UseProtoNames: true}
+	if jsonData == nil && err == nil {
 		jsonData, err = marshaller.Marshal(resource)
 	}
 	if err != nil {
@@ -100,7 +120,9 @@ func WriteResource(output Encoder, resource minderv1.ResourceMeta) error {
 // ReadResource reads a single resource from the specified Decoder.
 // Only known resource types are supported; others will return an error.
 // Given that multiple resources can be stored in a single file, the
-// the input may not be fully consumed.
+// the input may not be fully consumed.  ReadResource will always return
+// either a (pointer to) resource or an error; it will never return a nil
+// resource.
 //
 // The resource is returned as a proto.Message, which can be type-asserted
 // to the appropriate type (see also ReadResourceTyped).  Like
@@ -112,13 +134,9 @@ func ReadResource(input Decoder) (minderv1.ResourceMeta, error) {
 	if err := input.Decode(&genericObject); err != nil {
 		return nil, fmt.Errorf("error decoding: %w", err)
 	}
-	objectType, ok := genericObject["type"].(string)
-	if !ok {
-		return nil, fmt.Errorf("resource type not found")
-	}
-	objectVersion, ok := genericObject["version"].(string)
-	if !ok || objectVersion != "v1" {
-		return nil, fmt.Errorf("unsupported resource version: %s", objectVersion)
+	objectType, err := resourceType(genericObject)
+	if err != nil {
+		return nil, err
 	}
 	jsonData, err := json.Marshal(genericObject)
 	if err != nil {
@@ -136,9 +154,7 @@ func ReadResource(input Decoder) (minderv1.ResourceMeta, error) {
 		return &profile, nil
 	case string(minderv1.RuleTypeResource):
 		var ruleType minderv1.RuleType
-		// RuleTypes have customized enum fields (used only for storage).
-		// Preserve this behavior (at least for now).
-		if err := json.Unmarshal(jsonData, &ruleType); err != nil {
+		if err := unmarshalRuleType(jsonData, &ruleType); err != nil {
 			return nil, fmt.Errorf("error unmarshaling rule type: %w", err)
 		}
 		if err := ruleType.Validate(); err != nil {
@@ -155,13 +171,34 @@ func ReadResource(input Decoder) (minderv1.ResourceMeta, error) {
 		}
 		return &dataSource, nil
 	default:
-		return nil, fmt.Errorf("unknown resource type: %s", objectType)
+		return nil, fmt.Errorf("%w: %s", ErrUnknownResourceType, objectType)
 	}
 }
 
+// resourceType returns the type of a decoded resource, checking that it is a
+// known type before checking the version, so non-Minder YAML with a `type`
+// key is reported as an unknown type.
+func resourceType(genericObject map[string]any) (string, error) {
+	objectType, ok := genericObject["type"].(string)
+	if !ok {
+		return "", ErrResourceTypeNotFound
+	}
+	if !slices.Contains(knownResourceTypes, objectType) {
+		return "", fmt.Errorf("%w: %s", ErrUnknownResourceType, objectType)
+	}
+	objectVersion, ok := genericObject["version"].(string)
+	if !ok || objectVersion != "v1" {
+		return "", fmt.Errorf("unsupported resource version: %s", objectVersion)
+	}
+	return objectType, nil
+}
+
 // ReadResourceTyped reads a single resource from the specified Decoder and
-// returns it as the specified subtype of proto.Messsage.  This is a convenience
-// wrapper around ReadResource that handles the type assertion for you.
+// returns it as the specified subtype of proto.Messsage.  Given that T is
+// pointer, this will always return either a non-nil pointer or an error.
+//
+// This is a convenience wrapper around ReadResource that handles the type
+// assertion for you.
 func ReadResourceTyped[T proto.Message](input Decoder) (T, error) {
 	var zero T
 	r, err := ReadResource(input)
@@ -170,7 +207,72 @@ func ReadResourceTyped[T proto.Message](input Decoder) (T, error) {
 	}
 	typed, ok := r.(T)
 	if !ok {
-		return zero, fmt.Errorf("unexpected resource type: %T", r)
+		return zero, fmt.Errorf("%w: %T", ErrUnexpectedResourceType, r)
 	}
 	return typed, nil
+}
+
+func marshalRuleType(marshaller protojson.MarshalOptions, r *minderv1.RuleType) ([]byte, error) {
+	protoJSON, err := marshaller.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(protoJSON, &obj); err != nil {
+		return nil, err
+	}
+
+	if r.GetSeverity() != nil {
+		if severity, ok := obj["severity"].(map[string]any); ok {
+			if _, ok := severity["value"]; ok {
+				severity["value"] = r.GetSeverity().GetValue().Enum().AsString()
+			}
+		}
+	}
+	if _, ok := obj["release_phase"]; ok {
+		releasePhase, err := r.GetReleasePhase().Enum().AsString()
+		if err != nil {
+			return nil, fmt.Errorf("error converting release phase: %w", err)
+		}
+		obj["release_phase"] = releasePhase
+	}
+
+	return json.Marshal(obj)
+}
+
+func unmarshalRuleType(jsonData []byte, ruleType *minderv1.RuleType) error {
+	var obj map[string]any
+	if err := json.Unmarshal(jsonData, &obj); err != nil {
+		return err
+	}
+
+	for _, key := range []string{"release_phase", "releasePhase"} {
+		if phase, ok := obj[key].(string); ok {
+			if _, isProtoName := minderv1.RuleTypeReleasePhase_value[phase]; !isProtoName {
+				var rp minderv1.RuleTypeReleasePhase
+				if err := rp.FromString(phase); err != nil {
+					return err
+				}
+				obj[key] = rp.String()
+			}
+		}
+	}
+	if severity, ok := obj["severity"].(map[string]any); ok {
+		if value, ok := severity["value"].(string); ok {
+			if _, isProtoName := minderv1.Severity_Value_value[value]; !isProtoName {
+				var sv minderv1.Severity_Value
+				if err := sv.FromString(value); err != nil {
+					return err
+				}
+				severity["value"] = sv.String()
+			}
+		}
+	}
+
+	protoJSON, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+
+	return protojson.Unmarshal(protoJSON, ruleType)
 }

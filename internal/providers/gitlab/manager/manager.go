@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -37,6 +38,7 @@ type providerClassManager struct {
 	crypteng crypto.Engine
 	// gitlab provider config
 	glpcfg        *server.GitLabConfig
+	gitConfig     server.GitConfig
 	webhookURL    string
 	parentContext context.Context
 	pub           interfaces.Publisher
@@ -52,6 +54,7 @@ type providerClassManager struct {
 func NewGitLabProviderClassManager(
 	ctx context.Context, crypteng crypto.Engine, store db.Store, pub interfaces.Publisher,
 	cfg *server.GitLabConfig, wgCfg server.WebhookConfig,
+	gitConfig server.GitConfig,
 ) (*providerClassManager, error) {
 	webhookURLBase := wgCfg.ExternalWebhookURL
 	if webhookURLBase == "" {
@@ -82,6 +85,7 @@ func NewGitLabProviderClassManager(
 		crypteng:               crypteng,
 		pub:                    pub,
 		glpcfg:                 cfg,
+		gitConfig:              gitConfig,
 		webhookURL:             webhookURL,
 		parentContext:          ctx,
 		currentWebhookSecret:   whSecret,
@@ -124,7 +128,7 @@ func (g *providerClassManager) Build(ctx context.Context, config *db.Provider) (
 		return nil, fmt.Errorf("error parsing gitlab config: %w", err)
 	}
 
-	cli, err := gitlab.New(creds, cfg, g.webhookURL, g.currentWebhookSecret)
+	cli, err := gitlab.New(ctx, creds, cfg, g.webhookURL, g.currentWebhookSecret, g.gitConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating gitlab client: %w", err)
 	}
@@ -255,5 +259,7 @@ func (m *providerClassManager) persistToken(
 }
 
 func tokenNeedsRefresh(token oauth2.Token) bool {
-	return !token.Valid() || token.Expiry.UTC().Add(tokenExpirationThreshold).Before(time.Now().UTC())
+	bufferedExpiration := time.Now().UTC().Add(-1 * tokenExpirationThreshold)
+	return !strings.HasPrefix(token.AccessToken, "glpat-") && // is a PAT, not an OAuth token
+		(!token.Valid() || token.Expiry.UTC().Before(bufferedExpiration))
 }

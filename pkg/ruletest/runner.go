@@ -1,0 +1,348 @@
+// SPDX-FileCopyrightText: Copyright 2026 The Minder Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// Package ruletest provides a Starlark-based test runner for Minder rule types.
+package ruletest
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+
+	"go.starlark.net/lib/json"
+	"go.starlark.net/starlark"
+	"go.starlark.net/starlarktest"
+	"go.starlark.net/syntax"
+
+	"github.com/mindersec/minder/internal/util"
+	"github.com/mindersec/minder/internal/util/ptr"
+	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
+	"github.com/mindersec/minder/pkg/fileconvert"
+)
+
+// testCaseRunner is responsible for executing a single Starlark file
+// or a single test case. It implements the starlarktest.Reporter interface.
+type testCaseRunner struct {
+	thread      *starlark.Thread
+	fs          fs.FS
+	baseDir     string
+	predeclared starlark.StringDict
+	failures    []string
+	ruleTypes   map[string]*minderv1.RuleType
+	usedRules   map[string]struct{}
+}
+
+func (r *Runner) newTestCaseRunner(
+	name string, fileSystem fs.FS, baseDir string, ruleTypes map[string]*minderv1.RuleType,
+) *testCaseRunner {
+	if fileSystem == nil {
+		panic("fileSystem cannot be nil")
+	}
+	tr := &testCaseRunner{
+		fs:          fileSystem,
+		baseDir:     baseDir,
+		predeclared: starlark.StringDict{},
+		ruleTypes:   ruleTypes,
+		usedRules:   make(map[string]struct{}),
+	}
+	tr.thread = &starlark.Thread{
+		Name:  name,
+		Print: func(_ *starlark.Thread, msg string) { fmt.Println(msg) },
+	}
+	starlarktest.SetReporter(tr.thread, tr)
+
+	tr.predeclared["eval"] = starlark.NewBuiltin("eval", tr.builtinEval)
+	tr.predeclared["read_file"] = starlark.NewBuiltin("read_file", tr.builtinReadFile)
+	tr.predeclared["txtar"] = starlark.NewBuiltin("txtar", builtinTxtar)
+	tr.predeclared["body"] = starlark.NewBuiltin("body", builtinBody)
+	tr.predeclared["code"] = starlark.NewBuiltin("code", builtinCode)
+	tr.predeclared["json"] = json.Module
+
+	for k, v := range r.assertMod {
+		tr.predeclared[k] = v
+	}
+	return tr
+}
+
+// runFile loads and executes a Starlark file within the context of the testCaseRunner.
+func (tr *testCaseRunner) runFile(filename string, src any) (starlark.StringDict, error) {
+	return starlark.ExecFileOptions(&syntax.FileOptions{}, tr.thread, filename, src, tr.predeclared)
+}
+
+// Error is called by the starlarktest.Reporter interface when a test case fails.
+func (tr *testCaseRunner) Error(args ...any) {
+	tr.failures = append(tr.failures, fmt.Sprint(args...))
+}
+
+// TestResult holds the outcome of a single Starlark test function.
+type TestResult struct {
+	Filename string
+	Name     string
+	Failures []string
+	Errors   []string
+
+	// TODO: collect print output from Rego print() and Starlark (print?)
+
+	// EvaluatedRules is a set of rule names that were evaluated during the test.
+	EvaluatedRules map[string]struct{}
+}
+
+// Passed returns true if the test had no failures.
+func (tr *TestResult) Passed() bool {
+	return len(tr.Failures) == 0 && len(tr.Errors) == 0
+}
+
+// TestRun represents a run of all the tests in a given directory.
+type TestRun struct {
+	// BaseDir is the directory from which the test run was initiated.
+	BaseDir string
+	// LoadedRules is a list of rule names that were loaded from disk for the run.
+	LoadedRules []string
+	// Results is a list of test results for each test function executed.
+	Results []TestResult
+}
+
+// UncoveredRules returns a list of rule names that were loaded but not evaluated during the test run.
+func (tr *TestRun) UncoveredRules() []string {
+	uncovered := slices.Clone(tr.LoadedRules)
+	for _, res := range tr.Results {
+		uncovered = slices.DeleteFunc(uncovered, func(rule string) bool {
+			_, ok := res.EvaluatedRules[rule]
+			return ok
+		})
+	}
+	return uncovered
+}
+
+// Runner loads and executes Starlark test files.
+type Runner struct {
+	assertMod starlark.StringDict
+}
+
+// NewRunner creates a new test runner.
+func NewRunner() *Runner {
+	assertMod, err := starlarktest.LoadAssertModule()
+	if err != nil {
+		panic(fmt.Errorf("failed to load starlarktest assert module: %w", err))
+	}
+	return &Runner{
+		assertMod: assertMod,
+	}
+}
+
+// RunFile executes a single Starlark test file and returns the results
+// for each test_* function found in it.
+//
+// filename is the path to the *.star file. If src is nil, the file is
+// read from disk; otherwise src may be a string, []byte, or io.Reader
+// containing the Starlark source. ruleTypes supplies the rule type
+// definitions available to eval() calls within the test file.
+func (r *Runner) RunFile(filename string, src any, ruleTypes map[string]*minderv1.RuleType) ([]TestResult, error) {
+	if filename == "" {
+		return nil, errors.New("filename cannot be empty")
+	}
+
+	baseDir := filepath.Dir(filename)
+	fileSystem := os.DirFS(baseDir)
+
+	name := filepath.Base(filename)
+	tr := r.newTestCaseRunner(name, fileSystem, baseDir, ruleTypes)
+
+	globals, err := tr.runFile(filename, src)
+	if err != nil {
+		if evalErr, ok := errors.AsType[*starlark.EvalError](err); ok {
+			return nil, fmt.Errorf("loading %s: %w\n%s", filename, err, evalErr.Backtrace())
+		}
+		return nil, fmt.Errorf("loading %s: %w", filename, err)
+	}
+
+	testFns := make(map[string]*starlark.Function)
+	for _, name := range globals.Keys() {
+		if !strings.HasPrefix(name, "test_") {
+			continue
+		}
+		fn, ok := globals[name].(*starlark.Function)
+		if !ok {
+			return nil, fmt.Errorf("expected %s to be a function, got %s", name, globals[name].Type())
+		}
+		if fn.NumParams() != 0 {
+			return nil, fmt.Errorf("expected %s to have no parameters, got %d", name, fn.NumParams())
+		}
+		testFns[name] = fn
+	}
+
+	base := filepath.Base(filename)
+	var results []TestResult
+	for name, fn := range testFns {
+		result := r.runOneTest(name, fn, fileSystem, baseDir, ruleTypes)
+		result.Filename = base
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+func (r *Runner) runOneTest(
+	name string,
+	fn *starlark.Function,
+	fileSystem fs.FS,
+	baseDir string,
+	ruleTypes map[string]*minderv1.RuleType,
+) TestResult {
+	tr := r.newTestCaseRunner(name, fileSystem, baseDir, ruleTypes)
+	result := TestResult{Name: name}
+
+	// TODO: capture output from print statements in Starlark and Rego
+	_, err := starlark.Call(tr.thread, fn, nil, nil)
+	if err != nil {
+		if evalErr, ok := errors.AsType[*starlark.EvalError](err); ok {
+			result.Errors = append(result.Errors, evalErr.Backtrace())
+		} else {
+			result.Errors = append(result.Errors, err.Error())
+		}
+	}
+
+	result.Failures = append(result.Failures, tr.failures...)
+	result.EvaluatedRules = maps.Clone(tr.usedRules)
+
+	return result
+}
+
+// loadRulesFromDir finds and parses all *.yaml files in the given directory
+// into a map of RuleTypes keyed by rule name.
+func loadRulesFromDir(dir string) (map[string]*minderv1.RuleType, error) {
+	ruleTypes := make(map[string]*minderv1.RuleType)
+	ruleFiles, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
+	if err != nil {
+		return nil, fmt.Errorf("globbing yaml files: %w", err)
+	}
+	regoFiles, err := filepath.Glob(filepath.Join(dir, "*.rego"))
+	if err != nil {
+		return nil, fmt.Errorf("globbing rego files: %w", err)
+	}
+	ruleFiles = append(ruleFiles, regoFiles...)
+	var errs []error
+	for _, path := range ruleFiles {
+		rt, err := loadSingleRule(path)
+		if err != nil {
+			// Rego files are highly likely to be intentional ruletypes, do not silently swallow errors.
+			if filepath.Ext(path) == ".rego" {
+				errs = append(errs, fmt.Errorf("error loading rego file %s: %w", path, err))
+				continue
+			}
+			// Skip YAML files that aren't Minder rule types, as they might be other content; report the rest.
+			if !isNotRuleTypeError(err) {
+				errs = append(errs, fmt.Errorf("error loading rule file %s: %w", path, err))
+			}
+			continue
+		}
+		if rt != nil && rt.Name != "" {
+			if _, exists := ruleTypes[rt.Name]; exists {
+				return nil, fmt.Errorf("duplicate rule type name %q in directory %s", rt.Name, dir)
+			}
+			ruleTypes[rt.Name] = rt
+		}
+	}
+	return ruleTypes, errors.Join(errs...)
+}
+
+// isNotRuleTypeError reports whether a YAML load error means the file is not a
+// Minder rule type (another resource, non-Minder YAML, or an empty file).
+func isNotRuleTypeError(err error) bool {
+	return errors.Is(err, fileconvert.ErrResourceTypeNotFound) ||
+		errors.Is(err, fileconvert.ErrUnknownResourceType) ||
+		errors.Is(err, fileconvert.ErrUnexpectedResourceType) ||
+		errors.Is(err, io.EOF)
+}
+
+// loadSingleRule reads a single YAML file and returns the parsed RuleType, if any.
+func loadSingleRule(path string) (*minderv1.RuleType, error) {
+	decoder, closer := fileconvert.DecoderForFile(path)
+	if decoder == nil {
+		return nil, fmt.Errorf("error opening file: %s", path)
+	}
+	defer func(c io.Closer) {
+		_ = c.Close()
+	}(closer)
+
+	rt, err := fileconvert.ReadResourceTyped[*minderv1.RuleType](decoder)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure that ruletypes have a project context; the Minder CLI + API tooling
+	// will automatically apply the "current project" when creating a ruletype.
+	if rt.Context == nil {
+		rt.Context = &minderv1.Context{}
+	}
+	if rt.Context.GetProject() == "" {
+		rt.Context.Project = ptr.Ptr("00000000-0000-0000-0000-000000000000")
+	}
+
+	return rt, nil
+}
+
+// RunPaths takes a list of file or directory paths, discovering all *.star test
+// files recursively. Tests are grouped by their immediate directory, and any
+// *.yaml rules in that same directory are loaded and made available to the tests.
+// It collects errors instead of returning early on the first error.
+func (r *Runner) RunPaths(paths []string) ([]TestRun, error) {
+	expanded, err := util.ExpandFileArgs(paths...)
+	if err != nil {
+		return nil, fmt.Errorf("expanding paths: %w", err)
+	}
+
+	// Group .star files by their immediate directory
+	filesByDir := make(map[string][]string)
+	for _, f := range expanded {
+		if !f.Expanded && filepath.Ext(f.Path) != ".star" && filepath.Ext(f.Path) != ".yaml" && filepath.Ext(f.Path) != ".yml" {
+			// If it's a specific file that is not a star or yaml file, we skip it
+			continue
+		}
+		if filepath.Ext(f.Path) == ".star" {
+			dir := filepath.Dir(f.Path)
+			filesByDir[dir] = append(filesByDir[dir], f.Path)
+		}
+	}
+
+	var runs []TestRun
+	var errs []error
+
+	// Ensure deterministic execution order by sorting directories
+	dirs := slices.Sorted(maps.Keys(filesByDir))
+
+	for _, dir := range dirs {
+		files := filesByDir[dir]
+		sort.Strings(files)
+
+		ruleTypes, err := loadRulesFromDir(dir)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("loading rules for directory %s: %w", dir, err))
+			continue
+		}
+
+		run := TestRun{
+			BaseDir:     dir,
+			LoadedRules: slices.Sorted(maps.Keys(ruleTypes)),
+		}
+
+		for _, file := range files {
+			res, err := r.RunFile(file, nil, ruleTypes)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("error running file %s: %w", file, err))
+				continue
+			}
+			run.Results = append(run.Results, res...)
+		}
+		runs = append(runs, run)
+	}
+
+	return runs, errors.Join(errs...)
+}

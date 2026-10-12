@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,8 @@ import (
 )
 
 const (
+	// DefaultRequestTimeout is the default timeout for REST data source requests.
+	DefaultRequestTimeout = 5 * time.Second
 	// MaxBytesLimit is the maximum number of bytes to read from the response body
 	// We limit to 1MB to prevent abuse
 	MaxBytesLimit int64 = 1 << 20
@@ -54,11 +57,20 @@ type restHandler struct {
 	// used only to allow requests to localhost during tests
 	testOnlyTransport http.RoundTripper
 	// contains the request body or the key
-	body          string
-	bodyFromInput bool
-	headers       map[string]string
-	parse         string
-	// TODO implement fallback
+	body             string
+	bodyFromInput    bool
+	headers          map[string]string
+	parse            string
+	requestTimeout   time.Duration
+	maxResponseBytes int64
+	// fallback holds the per-status-code fallback responses configured on
+	// this data source definition. It is consulted in doRequest whenever the
+	// upstream response status is not in expectedStatus.
+	fallback []*minderv1.RestDataSource_Def_Fallback
+	// expectedStatus is the set of status codes treated as a normal
+	// response. It is always non-empty after construction, defaulting to
+	// []int{http.StatusOK} when expected_status is unset.
+	expectedStatus []int
 	// TODO implement auth
 	provider interfaces.RESTProvider
 }
@@ -78,7 +90,13 @@ func initMetrics() {
 	})
 }
 
-func newHandlerFromDef(def *minderv1.RestDataSource_Def, provider provinfv1.Provider) (*restHandler, error) {
+func newHandlerFromDef(
+	def *minderv1.RestDataSource_Def,
+	provider provinfv1.Provider,
+	testOnlyTransport http.RoundTripper,
+	requestTimeout time.Duration,
+	maxResponseBytes int64,
+) (*restHandler, error) {
 	if def == nil {
 		return nil, errors.New("rest data source handler definition is nil")
 	}
@@ -99,16 +117,29 @@ func newHandlerFromDef(def *minderv1.RestDataSource_Def, provider provinfv1.Prov
 	// If this is not a RESTProvider, restProvider will be nil, which we already need to handle.
 	restProvider, _ := interfaces.As[interfaces.RESTProvider](provider)
 
+	expectedStatus := make([]int, 0, len(def.GetExpectedStatus()))
+	for _, s := range def.GetExpectedStatus() {
+		expectedStatus = append(expectedStatus, int(s))
+	}
+	if len(expectedStatus) == 0 {
+		expectedStatus = []int{http.StatusOK}
+	}
+
 	return &restHandler{
-		rawInputSchema: def.GetInputSchema(),
-		inputSchema:    schema,
-		endpointTmpl:   def.GetEndpoint(),
-		method:         strings.ToUpper(cmp.Or(def.GetMethod(), http.MethodGet)),
-		headers:        def.GetHeaders(),
-		body:           body,
-		bodyFromInput:  bodyFromInput,
-		parse:          def.GetParse(),
-		provider:       restProvider,
+		rawInputSchema:    def.GetInputSchema(),
+		inputSchema:       schema,
+		endpointTmpl:      def.GetEndpoint(),
+		method:            strings.ToUpper(cmp.Or(def.GetMethod(), http.MethodGet)),
+		headers:           def.GetHeaders(),
+		body:              body,
+		bodyFromInput:     bodyFromInput,
+		parse:             def.GetParse(),
+		requestTimeout:    requestTimeout,
+		maxResponseBytes:  maxResponseBytes,
+		fallback:          def.GetFallback(),
+		expectedStatus:    expectedStatus,
+		provider:          restProvider,
+		testOnlyTransport: testOnlyTransport,
 	}, nil
 }
 
@@ -118,7 +149,7 @@ func (h *restHandler) GetArgsSchema() *structpb.Struct {
 
 func (h *restHandler) ValidateArgs(args any) error {
 	if h.inputSchema == nil {
-		return errors.New("input schema cannot be nil")
+		return nil
 	}
 
 	mapobj, ok := args.(map[string]any)
@@ -157,8 +188,6 @@ func (h *restHandler) Call(ctx context.Context, _ *interfaces.Ingested, args any
 	}
 	// TODO: Add option to use custom client
 	cli := &http.Client{
-		// TODO: Make timeout configurable
-		Timeout: 5 * time.Second,
 		// Don't allow calling non-public addresses.
 		Transport: transport,
 	}
@@ -191,7 +220,9 @@ func (h *restHandler) Call(ctx context.Context, _ *interfaces.Ingested, args any
 		}
 		doer = cli.Do
 	}
-	req = req.WithContext(ctx)
+	requestCtx, cancel := context.WithTimeout(ctx, h.effectiveRequestTimeout())
+	defer cancel()
+	req = req.WithContext(requestCtx)
 
 	for k, v := range h.headers {
 		req.Header.Add(k, v)
@@ -220,14 +251,33 @@ func (h *restHandler) doRequest(dofunc func(*http.Request) (*http.Response, erro
 
 	recordMetrics(req.Context(), resp, start)
 
+	if !slices.Contains(h.expectedStatus, resp.StatusCode) {
+		if fb, ok := h.matchFallback(resp.StatusCode); ok {
+			zerolog.Ctx(req.Context()).Debug().
+				Int("status_code", resp.StatusCode).
+				Int32("fallback_status_code", fb.GetHttpStatus()).
+				Msg("unexpected status code from datasource, using configured fallback")
+			return buildRestOutput(int(fb.GetHttpStatus()), fb.GetBody()), nil
+		}
+	}
+
 	bout, err := h.parseResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO: Handle fallback here.
-
 	return buildRestOutput(resp.StatusCode, bout), nil
+}
+
+// matchFallback returns the configured fallback for statusCode, if any.
+func (h *restHandler) matchFallback(statusCode int) (*minderv1.RestDataSource_Def_Fallback, bool) {
+	i := slices.IndexFunc(h.fallback, func(fb *minderv1.RestDataSource_Def_Fallback) bool {
+		return int(fb.GetHttpStatus()) == statusCode
+	})
+	if i < 0 {
+		return nil, false
+	}
+	return h.fallback[i], true
 }
 
 func (h *restHandler) getBody(args map[string]any) (io.Reader, int, error) {
@@ -275,7 +325,7 @@ func (h *restHandler) parseResponseBody(body io.Reader) (any, error) {
 		return nil, nil
 	}
 
-	lr := io.LimitReader(body, MaxBytesLimit)
+	lr := io.LimitReader(body, h.effectiveMaxResponseBytes())
 
 	if h.parse == "json" {
 		var jsonData any
@@ -295,6 +345,20 @@ func (h *restHandler) parseResponseBody(body io.Reader) (any, error) {
 	}
 
 	return data, nil
+}
+
+func (h *restHandler) effectiveRequestTimeout() time.Duration {
+	if h.requestTimeout > 0 {
+		return h.requestTimeout
+	}
+	return DefaultRequestTimeout
+}
+
+func (h *restHandler) effectiveMaxResponseBytes() int64 {
+	if h.maxResponseBytes > 0 {
+		return h.maxResponseBytes
+	}
+	return MaxBytesLimit
 }
 
 func parseRequestBodyConfig(def *minderv1.RestDataSource_Def) (bool, string, error) {

@@ -301,30 +301,61 @@ func TestRuleTypeService(t *testing.T) {
 			TestMethod: update,
 		},
 		{
-			Name:          "CreateRuleType rejects V1-only rego when flag is off",
-			RuleType:      newRuleType(withBasicStructure, withV1OnlyRego),
-			ExpectedError: "V1-only syntax",
+			Name:     "CreateRuleType accepts Rego V1",
+			RuleType: newRuleType(withBasicStructure, withRegoV1),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withNotFoundGet,
+				withSuccessfulCreateForRegoVersion("v1"), withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: create,
+		},
+		{
+			Name:     "UpdateRuleType accepts Rego V1",
+			RuleType: newRuleType(withBasicStructure, withRegoV1),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withSuccessfulGet,
+				withSuccessfulUpdateForRegoVersion("v1"), withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: update,
+		},
+		{
+			Name:     "CreateRuleType accepts Rego V0 during migration",
+			RuleType: newRuleType(withBasicStructure, withV0OnlyRego),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withNotFoundGet,
+				withSuccessfulCreateForRegoVersion("v0"), withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: create,
+		},
+		{
+			Name:     "UpdateRuleType accepts Rego V0 during migration",
+			RuleType: newRuleType(withBasicStructure, withV0OnlyRego),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withSuccessfulGet,
+				withSuccessfulUpdateForRegoVersion("v0"), withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: update,
+		},
+		{
+			Name:          "CreateRuleType rejects Rego V0 when refusal is enabled",
+			RuleType:      newRuleType(withBasicStructure, withV0OnlyRego),
+			ExpectedError: "opa fmt --v0-v1",
 			TestMethod:    create,
+			FeatureFlags:  map[string]any{string(flags.RegoV1RefuseV0): true},
 		},
 		{
-			Name:          "UpdateRuleType rejects V1-only rego when flag is off",
-			RuleType:      newRuleType(withBasicStructure, withV1OnlyRego),
-			ExpectedError: "V1-only syntax",
+			Name:          "UpdateRuleType rejects Rego V0 when refusal is enabled",
+			RuleType:      newRuleType(withBasicStructure, withV0OnlyRego),
+			ExpectedError: "opa fmt --v0-v1",
 			TestMethod:    update,
+			FeatureFlags:  map[string]any{string(flags.RegoV1RefuseV0): true},
 		},
 		{
-			Name:         "CreateRuleType allows V1-only rego when flag is on",
-			RuleType:     newRuleType(withBasicStructure, withV1OnlyRego),
-			DBSetup:      dbf.NewDBMock(withHierarchyGet, withNotFoundGet, withSuccessfulCreate, withSuccessfulDeleteRuleTypeDataSource),
+			Name:     "CreateRuleType accepts V1-compatible Rego when refusal is enabled",
+			RuleType: newRuleType(withBasicStructure, withRegoCompatibleWithV1),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withNotFoundGet,
+				withSuccessfulCreateForRegoVersion("v1"), withSuccessfulDeleteRuleTypeDataSource),
 			TestMethod:   create,
-			FeatureFlags: map[string]any{string(flags.RegoV1DualParse): true},
+			FeatureFlags: map[string]any{string(flags.RegoV1RefuseV0): true},
 		},
 		{
-			Name:         "UpdateRuleType allows V1-only rego when flag is on",
-			RuleType:     newRuleType(withBasicStructure, withV1OnlyRego),
-			DBSetup:      dbf.NewDBMock(withHierarchyGet, withSuccessfulGet, withSuccessfulUpdate, withSuccessfulDeleteRuleTypeDataSource),
-			TestMethod:   update,
-			FeatureFlags: map[string]any{string(flags.RegoV1DualParse): true},
+			Name:     "CreateRuleType without Rego stores default version",
+			RuleType: newRuleType(withBasicStructure),
+			DBSetup: dbf.NewDBMock(withHierarchyGet, withNotFoundGet,
+				withSuccessfulCreateForRegoVersion("v0"), withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: create,
 		},
 		{
 			Name:          "CreateRuleType rejects invalid rego syntax",
@@ -336,6 +367,30 @@ func TestRuleTypeService(t *testing.T) {
 			Name:          "UpdateRuleType rejects invalid rego syntax",
 			RuleType:      newRuleType(withBasicStructure, withInvalidRego),
 			ExpectedError: "rego definition is invalid",
+			TestMethod:    update,
+		},
+		{
+			Name:       "CreateRuleType accepts valid provider_traits",
+			RuleType:   newRuleType(withBasicStructure, withProviderTraits("git", "github")),
+			DBSetup:    dbf.NewDBMock(withHierarchyGet, withNotFoundGet, withSuccessfulCreate, withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: create,
+		},
+		{
+			Name:          "CreateRuleType rejects invalid provider_traits",
+			RuleType:      newRuleType(withBasicStructure, withProviderTraits("gihtub")),
+			ExpectedError: ruletypes.ErrRuleTypeInvalid.Error(),
+			TestMethod:    create,
+		},
+		{
+			Name:       "UpdateRuleType accepts valid provider_traits",
+			RuleType:   newRuleType(withBasicStructure, withProviderTraits("git", "github")),
+			DBSetup:    dbf.NewDBMock(withHierarchyGet, withSuccessfulGet, withSuccessfulUpdate, withSuccessfulDeleteRuleTypeDataSource),
+			TestMethod: update,
+		},
+		{
+			Name:          "UpdateRuleType rejects invalid provider_traits",
+			RuleType:      newRuleType(withBasicStructure, withProviderTraits("gihtub")),
+			ExpectedError: ruletypes.ErrRuleTypeInvalid.Error(),
 			TestMethod:    update,
 		},
 	}
@@ -486,6 +541,12 @@ func withRuleName(name string) func(ruleType *pb.RuleType) {
 	}
 }
 
+func withProviderTraits(traits ...string) func(ruleType *pb.RuleType) {
+	return func(ruleType *pb.RuleType) {
+		ruleType.Def.ProviderTraits = traits
+	}
+}
+
 func withIncompatibleDef(ruleType *pb.RuleType) {
 	ruleType.Def.RuleSchema = incompatibleSchema
 }
@@ -494,20 +555,41 @@ func withIncompatibleParams(ruleType *pb.RuleType) {
 	ruleType.Def.ParamSchema = incompatibleSchema
 }
 
-// withV1OnlyRego sets a Rego definition that uses V1-only syntax (the
-// `contains` keyword), which parses under V1 but fails under V0.
-func withV1OnlyRego(ruleType *pb.RuleType) {
+// withV0OnlyRego uses legacy partial-set syntax, which is invalid under Rego V1.
+func withV0OnlyRego(ruleType *pb.RuleType) {
 	ruleType.Def.Eval = &pb.RuleType_Definition_Eval{
 		Type: "rego",
 		Rego: &pb.RuleType_Definition_Eval_Rego{
 			Type: "deny",
-			Def:  "package minder\n\nviolations contains msg if {\n    msg := \"something bad\"\n}\n",
+			Def:  "package minder\n\ndenies[msg] {\n    msg := \"something bad\"\n}\n",
+		},
+	}
+}
+
+func withRegoV1(ruleType *pb.RuleType) {
+	ruleType.Def.Eval = &pb.RuleType_Definition_Eval{
+		Type: "rego",
+		Rego: &pb.RuleType_Definition_Eval_Rego{
+			Type: "deny",
+			Def:  "package minder\n\nimport rego.v1\n\nviolations contains msg if {\n    msg := \"something bad\"\n}\n",
+		},
+	}
+}
+
+// withRegoCompatibleWithV1 is valid under the V1 parser without requiring
+// syntax that is exclusive to either dialect.
+func withRegoCompatibleWithV1(ruleType *pb.RuleType) {
+	ruleType.Def.Eval = &pb.RuleType_Definition_Eval{
+		Type: "rego",
+		Rego: &pb.RuleType_Definition_Eval_Rego{
+			Type: "deny-by-default",
+			Def:  "package minder\n\ndefault allow := false\n",
 		},
 	}
 }
 
 // withInvalidRego sets a Rego definition with a syntax error that is
-// invalid in both V0 and V1.
+// invalid in Rego V1.
 func withInvalidRego(ruleType *pb.RuleType) {
 	ruleType.Def.Eval = &pb.RuleType_Definition_Eval{
 		Type: "rego",
@@ -567,6 +649,14 @@ func withSuccessfulCreate(mock dbf.DBMock) {
 		Return(expectation, nil)
 }
 
+func withSuccessfulCreateForRegoVersion(version string) func(dbf.DBMock) {
+	return func(mock dbf.DBMock) {
+		mock.EXPECT().
+			CreateRuleType(gomock.Any(), regoVersionMatcher{version: version}).
+			Return(expectation, nil)
+	}
+}
+
 func withSuccessfulNamespaceCreate(mock dbf.DBMock) {
 	mock.EXPECT().
 		CreateRuleType(gomock.Any(), gomock.Any()).
@@ -583,6 +673,14 @@ func withSuccessfulUpdate(mock dbf.DBMock) {
 	mock.EXPECT().
 		UpdateRuleType(gomock.Any(), gomock.Any()).
 		Return(expectation, nil)
+}
+
+func withSuccessfulUpdateForRegoVersion(version string) func(dbf.DBMock) {
+	return func(mock dbf.DBMock) {
+		mock.EXPECT().
+			UpdateRuleType(gomock.Any(), regoVersionMatcher{version: version}).
+			Return(expectation, nil)
+	}
 }
 
 func withFailedUpdate(mock dbf.DBMock) {
@@ -635,6 +733,25 @@ func withFailedAddRuleTypeDataSourceReference(mock dbf.DBMock) {
 	mock.EXPECT().
 		AddRuleTypeDataSourceReference(gomock.Any(), gomock.Any()).
 		Return(db.RuleTypeDataSource{}, errDefault)
+}
+
+type regoVersionMatcher struct {
+	version string
+}
+
+func (m regoVersionMatcher) Matches(value any) bool {
+	switch params := value.(type) {
+	case db.CreateRuleTypeParams:
+		return params.RegoVersion == m.version
+	case db.UpdateRuleTypeParams:
+		return params.RegoVersion == m.version
+	default:
+		return false
+	}
+}
+
+func (m regoVersionMatcher) String() string {
+	return fmt.Sprintf("has RegoVersion %q", m.version)
 }
 
 func newDBRuleType(severity db.Severity, subscriptionID uuid.UUID, failureMessage string) db.RuleType {

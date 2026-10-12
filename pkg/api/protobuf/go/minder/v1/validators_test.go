@@ -6,8 +6,40 @@ package v1
 import (
 	"testing"
 
+	"buf.build/go/protovalidate"
 	"google.golang.org/protobuf/types/known/structpb"
 )
+
+func TestUpstreamRepositoryRef_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		owner   string
+		wantErr bool
+	}{
+		{name: "letter-prefixed namespace", owner: "example-org"},
+		{name: "digit-prefixed namespace", owner: "2testminder"},
+		{name: "digit-prefixed hyphenated namespace", owner: "2-mindertest"},
+		{name: "invalid punctuation prefix", owner: ".example", wantErr: true},
+	}
+
+	validator, err := protovalidate.New()
+	if err != nil {
+		t.Fatalf("create validator: %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validator.Validate(&UpstreamRepositoryRef{Owner: tt.owner, Name: "repository"})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
 
 func TestRuleType_Definition_Ingest_Validate(t *testing.T) {
 	t.Parallel()
@@ -27,7 +59,7 @@ func TestRuleType_Definition_Ingest_Validate(t *testing.T) {
 		{
 			name: "valid rest ingest",
 			ingest: &RuleType_Definition_Ingest{
-				Type: "rest",
+				Type: IngestTypeRest,
 				Rest: &RestType{
 					Endpoint: "https://example.com/api",
 				},
@@ -50,7 +82,7 @@ func TestRuleType_Definition_Ingest_Validate(t *testing.T) {
 		{
 			name: "invalid rest ingest",
 			ingest: &RuleType_Definition_Ingest{
-				Type: "rest",
+				Type: IngestTypeRest,
 				Rest: &RestType{
 					Endpoint: "",
 				},
@@ -83,7 +115,7 @@ func TestRuleType_Definition_Eval_Validate(t *testing.T) {
 			eval: &RuleType_Definition_Eval{
 				Type: "rego",
 				Rego: &RuleType_Definition_Eval_Rego{
-					Def: "package example.policy\n\nallow { true }",
+					Def: "package example.policy\n\nimport rego.v1\n\nallow if { true }",
 				},
 				DataSources: []*DataSourceReference{
 					{
@@ -99,7 +131,7 @@ func TestRuleType_Definition_Eval_Validate(t *testing.T) {
 			eval: &RuleType_Definition_Eval{
 				Type: "rego",
 				Rego: &RuleType_Definition_Eval_Rego{
-					Def: "package example.policy\n\nallow { true }",
+					Def: "package example.policy\n\nimport rego.v1\n\nallow if { true }",
 				},
 				DataSources: []*DataSourceReference{
 					{
@@ -118,7 +150,7 @@ func TestRuleType_Definition_Eval_Validate(t *testing.T) {
 			name: "eval definition with same name and alias",
 			eval: &RuleType_Definition_Eval{
 				Rego: &RuleType_Definition_Eval_Rego{
-					Def: "package example.policy\n\nallow { true }",
+					Def: "package example.policy\n\nimport rego.v1\n\nallow if { true }",
 				},
 				DataSources: []*DataSourceReference{
 					{
@@ -285,7 +317,7 @@ func TestRuleType_Definition_Eval_Rego_Validate(t *testing.T) {
 		{
 			name: "valid rego definition",
 			rego: &RuleType_Definition_Eval_Rego{
-				Def: "package example.policy\n\nallow { true }",
+				Def: "package example.policy\n\nimport rego.v1\n\nallow if { true }",
 			},
 			wantErr: false,
 		},

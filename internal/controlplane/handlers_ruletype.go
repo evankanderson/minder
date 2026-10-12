@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/microcosm-cc/bluemonday"
+	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
@@ -23,19 +24,20 @@ import (
 
 	"github.com/mindersec/minder/internal/db"
 	"github.com/mindersec/minder/internal/engine/engcontext"
+	regoeval "github.com/mindersec/minder/internal/engine/eval/rego"
 	"github.com/mindersec/minder/internal/logger"
 	"github.com/mindersec/minder/internal/util"
 	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	"github.com/mindersec/minder/pkg/ruletypes"
 )
 
-var (
-	maxReadableStringSize = 3 * 1 << 10 // 3kB
-)
+const regoV0DeprecationWarning = "This rule type uses Rego V0 syntax. " +
+	"Please migrate to V1 using `opa fmt --v0-v1`. " +
+	"V0 support will be removed in a future release."
 
-var (
-	errInvalidRuleType = errors.New("invalid rule type")
-)
+const maxReadableStringSize = 3 * 1 << 10 // 3kB
+
+var errInvalidRuleType = errors.New("invalid rule type")
 
 // ListRuleTypes is a method to list all rule types for a given context
 func (s *Server) ListRuleTypes(
@@ -130,7 +132,10 @@ func (s *Server) GetRuleTypeById(
 		return nil, util.UserVisibleError(codes.InvalidArgument, "invalid rule type ID")
 	}
 
-	rtdb, err := s.store.GetRuleTypeByID(ctx, parsedRuleTypeID)
+	rtdb, err := s.store.GetRuleTypeByID(ctx, db.GetRuleTypeByIDParams{
+		Projects: []uuid.UUID{entityCtx.Project.ID},
+		ID:       parsedRuleTypeID,
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, util.UserVisibleError(codes.NotFound, "rule type %s not found", in.GetId())
 	} else if err != nil {
@@ -190,6 +195,7 @@ func (s *Server) CreateRuleType(
 
 	return &minderv1.CreateRuleTypeResponse{
 		RuleType: newRuleType,
+		Warnings: regoVersionWarnings(crt.GetRuleType()),
 	}, nil
 }
 
@@ -230,7 +236,21 @@ func (s *Server) UpdateRuleType(
 
 	return &minderv1.UpdateRuleTypeResponse{
 		RuleType: updatedRuleType,
+		Warnings: regoVersionWarnings(urt.GetRuleType()),
 	}, nil
+}
+
+func regoVersionWarnings(ruleType *minderv1.RuleType) []string {
+	eval := ruleType.GetDef().GetEval()
+	if eval.GetType() != regoeval.RegoEvalType || eval.GetRego().GetDef() == "" {
+		return nil
+	}
+
+	if regoeval.DetectRegoVersion(eval.GetRego().GetDef()) != ast.RegoV0 {
+		return nil
+	}
+
+	return []string{regoV0DeprecationWarning}
 }
 
 // DeleteRuleType is a method to delete a rule type
@@ -261,8 +281,10 @@ func (s *Server) DeleteRuleType(
 				return nil, status.Errorf(codes.Unknown, "failed to get rule type: %s", err)
 			}
 		} else {
-			rtdb, err = qtx.GetRuleTypeByID(ctx, parsedRuleTypeID)
-
+			rtdb, err = qtx.GetRuleTypeByID(ctx, db.GetRuleTypeByIDParams{
+				Projects: []uuid.UUID{entityCtx.Project.ID},
+				ID:       parsedRuleTypeID,
+			})
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return nil, util.UserVisibleError(codes.NotFound, "rule type %s not found", in.GetId())

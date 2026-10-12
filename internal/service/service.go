@@ -10,6 +10,7 @@ import (
 
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/open-feature/go-sdk/openfeature"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/mindersec/minder/internal/auth"
@@ -33,7 +34,6 @@ import (
 	"github.com/mindersec/minder/internal/history"
 	"github.com/mindersec/minder/internal/invites"
 	"github.com/mindersec/minder/internal/marketplaces"
-	"github.com/mindersec/minder/internal/metrics/meters"
 	"github.com/mindersec/minder/internal/projects"
 	"github.com/mindersec/minder/internal/providers"
 	"github.com/mindersec/minder/internal/providers/dockerhub"
@@ -44,6 +44,7 @@ import (
 	"github.com/mindersec/minder/internal/providers/github/service"
 	gitlabmanager "github.com/mindersec/minder/internal/providers/gitlab/manager"
 	"github.com/mindersec/minder/internal/providers/manager"
+	"github.com/mindersec/minder/internal/providers/quay"
 	"github.com/mindersec/minder/internal/providers/ratecache"
 	"github.com/mindersec/minder/internal/providers/session"
 	provtelemetry "github.com/mindersec/minder/internal/providers/telemetry"
@@ -53,6 +54,7 @@ import (
 	"github.com/mindersec/minder/internal/roles"
 	pb "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	serverconfig "github.com/mindersec/minder/pkg/config/server"
+	v1datasources "github.com/mindersec/minder/pkg/datasources/v1"
 	"github.com/mindersec/minder/pkg/engine/selectors"
 	"github.com/mindersec/minder/pkg/eventer"
 	"github.com/mindersec/minder/pkg/eventer/interfaces"
@@ -73,10 +75,11 @@ func AllInOneServerService(
 	restClientCache ratecache.RestClientCache,
 	authzClient authz.Client,
 	idClient auth.Resolver,
+	idManager auth.IdentityManager,
 	serverMetrics metrics.Metrics,
 	providerMetrics provtelemetry.ProviderMetrics,
 	executorMiddleware []message.HandlerMiddleware,
-	meterFactory meters.MeterFactory,
+	meterProvider metric.MeterProvider,
 ) error {
 	errg, ctx := errgroup.WithContext(ctx)
 	flags.OpenFeatureProviderFromFlags(ctx, cfg.Flags)
@@ -100,7 +103,15 @@ func AllInOneServerService(
 	profileSvc := profiles.NewProfileService(evt, selChecker)
 	ruleSvc := ruletypes.NewRuleTypeService(featureFlagClient)
 	roleScv := roles.NewRoleService()
-	dataSourcesSvc := datasourcessvc.NewDataSourceService(store)
+	restMaxResponseBytes, err := cfg.DataSources.REST.GetMaxResponseBytes()
+	if err != nil {
+		return fmt.Errorf("invalid REST data source configuration: %w", err)
+	}
+	dataSourcesSvc := datasourcessvc.NewDataSourceService(
+		store,
+		v1datasources.WithRESTRequestTimeout(cfg.DataSources.REST.RequestTimeout),
+		v1datasources.WithRESTMaxResponseBytes(restMaxResponseBytes),
+	)
 	marketplace, err := marketplaces.NewMarketplaceFromServiceConfig(cfg.Marketplace, profileSvc, ruleSvc, dataSourcesSvc)
 	if err != nil {
 		return fmt.Errorf("failed to create marketplace: %w", err)
@@ -109,7 +120,14 @@ func AllInOneServerService(
 	fallbackTokenClient := ghprov.NewFallbackTokenClient(cfg.Provider)
 	ghClientFactory := clients.NewGitHubClientFactory(providerMetrics)
 	providerStore := providers.NewProviderStore(store)
-	projectCreator := projects.NewProjectCreator(authzClient, marketplace, &cfg.DefaultProfiles, &cfg.Features)
+	projectCreator := projects.NewProjectCreator(
+		authzClient,
+		marketplace,
+		&cfg.DefaultProfiles,
+		&cfg.Features,
+		store,
+		featureFlagClient,
+	)
 	propSvc := propService.NewPropertiesService(store)
 
 	// TODO: isolate GitHub-specific wiring. We'll need to isolate GitHub
@@ -119,7 +137,7 @@ func AllInOneServerService(
 		cryptoEngine,
 		serverMetrics,
 		&cfg.Provider,
-		makeProjectFactory(projectCreator, cfg.Identity),
+		makeProjectFactory(projectCreator, idClient),
 		ghClientFactory,
 	)
 	githubProviderManager := ghmanager.NewGitHubProviderClassManager(
@@ -146,6 +164,14 @@ func AllInOneServerService(
 		provmans = append(provmans, dockerhubProviderManager)
 	}
 
+	if flags.Bool(ctx, featureFlagClient, flags.QuayProvider) {
+		quayProviderManager := quay.NewQuayProviderClassManager(
+			cryptoEngine,
+			store,
+		)
+		provmans = append(provmans, quayProviderManager)
+	}
+
 	if flags.Bool(ctx, featureFlagClient, flags.GitLabProvider) {
 		gitlabProviderManager, err := gitlabmanager.NewGitLabProviderClassManager(
 			ctx,
@@ -154,6 +180,7 @@ func AllInOneServerService(
 			evt,
 			cfg.Provider.GitLab,
 			cfg.WebhookConfig,
+			cfg.Provider.Git,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create gitlab provider manager: %w", err)
@@ -218,17 +245,18 @@ func AllInOneServerService(
 		sessionsService,
 		projectDeleter,
 		projectCreator,
+		idManager,
 		entSvc,
 		entityCreator,
 		featureFlagClient,
 	)
 
 	// Subscribe to events from the identity server
-	err = controlplane.SubscribeToIdentityEvents(ctx, store, authzClient, cfg, projectDeleter)
+	err = controlplane.SubscribeToIdentityEvents(ctx, store, authzClient, idManager, projectDeleter)
 	if err != nil {
 		return fmt.Errorf("unable to subscribe to identity server events: %w", err)
 	}
-	err = controlplane.SubscribeToAdminEvents(ctx, store, authzClient, cfg, projectDeleter)
+	err = controlplane.SubscribeToAdminEvents(ctx, store, authzClient, idManager, projectDeleter)
 	if err != nil {
 		return fmt.Errorf("unable to subscribe to account events: %w", err)
 	}
@@ -240,7 +268,7 @@ func AllInOneServerService(
 
 	// prepend the aggregator to the executor options
 	executorMiddleware = append([]message.HandlerMiddleware{aggr.AggregateMiddleware}, executorMiddleware...)
-	executorMetrics, err := engine.NewExecutorMetrics(meterFactory)
+	executorMetrics, err := engine.NewExecutorMetrics(meterProvider)
 	if err != nil {
 		return fmt.Errorf("unable to create metrics for executor: %w", err)
 	}
@@ -360,7 +388,7 @@ func AllInOneServerService(
 // projectCreator and the like from the providers implementation.
 func makeProjectFactory(
 	projectCreator projects.ProjectCreator,
-	identity serverconfig.IdentityConfigWrapper,
+	idClient auth.Resolver,
 ) service.ProjectFactory {
 	return func(
 		ctx context.Context,
@@ -368,7 +396,7 @@ func makeProjectFactory(
 		name string,
 		ghUser int64,
 	) (*db.Project, error) {
-		user, err := auth.GetUserForGitHubId(ctx, identity, ghUser)
+		user, err := auth.GetUserForGitHubId(ctx, idClient, ghUser)
 		if err != nil {
 			return nil, fmt.Errorf("error getting user for GitHub ID: %w", err)
 		}

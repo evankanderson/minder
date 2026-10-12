@@ -50,20 +50,15 @@ allow if {
 			wantStr: "v1",
 		},
 		{
-			name: "v0 policy with future.keywords parses as v1",
+			name: "v1 policy with keyword syntax without rego.v1 import",
 			def: `
 package minder
 
-import future.keywords.if
-import future.keywords.in
-
-default allow = false
+default allow := false
 
 allow if {
 	"admin" in input.profile.roles
 }`,
-			// future.keywords policies are accepted by OPA's V1 parser
-			// for backward compatibility during migration.
 			want:    ast.RegoV1,
 			wantStr: "v1",
 		},
@@ -107,6 +102,62 @@ package minder
 default allow := false`,
 			want:    ast.RegoV1,
 			wantStr: "v1",
+		},
+		{
+			name: "v0 function syntax",
+			def: `
+package minder
+
+format_message(name) = msg {
+	msg := sprintf("hello, %s", [name])
+}`,
+			want:    ast.RegoV0,
+			wantStr: "v0",
+		},
+		{
+			name: "v1 function syntax",
+			def: `
+package minder
+
+format_message(name) := msg if {
+	msg := sprintf("hello, %s", [name])
+}`,
+			want:    ast.RegoV1,
+			wantStr: "v1",
+		},
+		{
+			name: "v0 partial set with comprehension",
+			def: `
+package minder
+
+violations[msg] {
+	names := [item.name | item := input.items[_]]
+	msg = sprintf("items: %v", [names])
+}`,
+			want:    ast.RegoV0,
+			wantStr: "v0",
+		},
+		{
+			name: "v1 every keyword",
+			def: `
+package minder
+
+allow if {
+	every item in input.items {
+		item.allowed
+	}
+}`,
+			want:    ast.RegoV1,
+			wantStr: "v1",
+		},
+		{
+			name: "syntax error falls back to v0",
+			def: `
+package minder
+
+allow {`,
+			want:    ast.RegoV0,
+			wantStr: "v0",
 		},
 	}
 

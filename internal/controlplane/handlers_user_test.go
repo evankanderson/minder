@@ -15,7 +15,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
-	"github.com/lestrrat-go/jwx/v2/jwt/openid"
+	"github.com/lestrrat-go/jwx/v3/jwt/openid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -28,6 +28,7 @@ import (
 	"github.com/mindersec/minder/internal/auth"
 	"github.com/mindersec/minder/internal/auth/jwt"
 	mockjwt "github.com/mindersec/minder/internal/auth/jwt/mock"
+	mockauth "github.com/mindersec/minder/internal/auth/mock"
 	"github.com/mindersec/minder/internal/authz"
 	"github.com/mindersec/minder/internal/authz/mock"
 	mockcrypto "github.com/mindersec/minder/internal/crypto/mock"
@@ -42,6 +43,7 @@ import (
 	pb "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	serverconfig "github.com/mindersec/minder/pkg/config/server"
 	"github.com/mindersec/minder/pkg/eventer"
+	"github.com/mindersec/minder/pkg/flags"
 )
 
 const (
@@ -68,7 +70,8 @@ func TestCreateUser_gRPC(t *testing.T) {
 			name: "Success",
 			req:  &pb.CreateUserRequest{},
 			buildStubs: func(ctx context.Context, store *mockdb.MockStore, jwt *mockjwt.MockValidator,
-				_ *mockprov.MockGitHubProviderService) context.Context {
+				_ *mockprov.MockGitHubProviderService,
+			) context.Context {
 				tx := sql.Tx{}
 				store.EXPECT().BeginTransaction().Return(&tx, nil)
 				store.EXPECT().GetQuerierWithTransaction(gomock.Any()).Return(store)
@@ -113,7 +116,8 @@ func TestCreateUser_gRPC(t *testing.T) {
 			name: "Success with pending App",
 			req:  &pb.CreateUserRequest{},
 			buildStubs: func(ctx context.Context, store *mockdb.MockStore, validator *mockjwt.MockValidator,
-				prov *mockprov.MockGitHubProviderService) context.Context {
+				prov *mockprov.MockGitHubProviderService,
+			) context.Context {
 				ctx = jwt.WithAuthTokenContext(ctx, keyCloakUserToken)
 
 				tx := sql.Tx{}
@@ -170,7 +174,8 @@ func TestCreateUser_gRPC(t *testing.T) {
 			name: "Success with two pending Apps",
 			req:  &pb.CreateUserRequest{},
 			buildStubs: func(ctx context.Context, store *mockdb.MockStore, validator *mockjwt.MockValidator,
-				prov *mockprov.MockGitHubProviderService) context.Context {
+				prov *mockprov.MockGitHubProviderService,
+			) context.Context {
 				ctx = jwt.WithAuthTokenContext(ctx, keyCloakUserToken)
 
 				tx := sql.Tx{}
@@ -270,6 +275,8 @@ func TestCreateUser_gRPC(t *testing.T) {
 					marketplaces.NewNoopMarketplace(),
 					&serverconfig.DefaultProfilesConfig{},
 					&serverconfig.FeaturesConfig{},
+					mockStore,
+					&flags.FakeClient{},
 				),
 			}
 
@@ -294,6 +301,7 @@ func TestDeleteUserDBMock(t *testing.T) {
 
 	mockStore := mockdb.NewMockStore(ctrl)
 	mockJwtValidator := mockjwt.NewMockValidator(ctrl)
+	mockIdManager := mockauth.NewMockIdentityManager(ctrl)
 
 	request := &pb.DeleteUserRequest{}
 
@@ -341,6 +349,8 @@ func TestDeleteUserDBMock(t *testing.T) {
 	// we expect rollback to be called even if there is no error (through defer), in that case it will be a no-op
 	mockStore.EXPECT().Rollback(gomock.Any())
 
+	mockIdManager.EXPECT().DeleteUser(gomock.Any(), "subject1").Return(nil)
+
 	crypeng := mockcrypto.NewMockEngine(ctrl)
 
 	server := &Server{
@@ -358,6 +368,7 @@ func TestDeleteUserDBMock(t *testing.T) {
 		jwt:          mockJwtValidator,
 		cryptoEngine: crypeng,
 		authzClient:  &mock.NoopClient{Authorized: true},
+		idManager:    mockIdManager,
 	}
 
 	response, err := server.DeleteUser(ctx, request)
@@ -372,14 +383,14 @@ func TestDeleteUser_gRPC(t *testing.T) {
 	testCases := []struct {
 		name               string
 		req                *pb.DeleteUserRequest
-		buildStubs         func(store *mockdb.MockStore, jwt *mockjwt.MockValidator)
+		buildStubs         func(store *mockdb.MockStore, jwt *mockjwt.MockValidator, idm *mockauth.MockIdentityManager)
 		checkResponse      func(t *testing.T, res *pb.DeleteUserResponse, err error)
 		expectedStatusCode codes.Code
 	}{
 		{
 			name: "Success",
 			req:  &pb.DeleteUserRequest{},
-			buildStubs: func(store *mockdb.MockStore, jwt *mockjwt.MockValidator) {
+			buildStubs: func(store *mockdb.MockStore, jwt *mockjwt.MockValidator, idm *mockauth.MockIdentityManager) {
 				tokenResult, _ := openid.NewBuilder().Subject("subject1").Build()
 				jwt.EXPECT().ParseAndValidate(gomock.Any()).Return(tokenResult, nil)
 
@@ -397,6 +408,8 @@ func TestDeleteUser_gRPC(t *testing.T) {
 				store.EXPECT().Commit(gomock.Any())
 				// we expect rollback to be called even if there is no error (through defer), in that case it will be a no-op
 				store.EXPECT().Rollback(gomock.Any())
+
+				idm.EXPECT().DeleteUser(gomock.Any(), "subject1").Return(nil)
 			},
 			checkResponse: func(t *testing.T, res *pb.DeleteUserResponse, err error) {
 				t.Helper()
@@ -426,27 +439,10 @@ func TestDeleteUser_gRPC(t *testing.T) {
 
 			mockStore := mockdb.NewMockStore(ctrl)
 			mockJwtValidator := mockjwt.NewMockValidator(ctrl)
-			tc.buildStubs(mockStore, mockJwtValidator)
+			mockIdManager := mockauth.NewMockIdentityManager(ctrl)
+			tc.buildStubs(mockStore, mockJwtValidator, mockIdManager)
 
-			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case tokenEndpoint:
-					data := oauth2.Token{
-						AccessToken: "some-token",
-					}
-					w.Header().Add("Content-Type", "application/json")
-					w.WriteHeader(http.StatusOK)
-					err := json.NewEncoder(w).Encode(data)
-					if err != nil {
-						t.Fatal(err)
-					}
-				case "/admin/realms/stacklok/users/subject1":
-					w.WriteHeader(http.StatusNoContent)
-				default:
-					t.Fatalf("Unexpected call to mock server endpoint %s", r.URL.Path)
-				}
-			}))
-			defer testServer.Close()
+			// HTTP server mock removed because the IdentityManager mock now handles identity deletions.
 
 			evt, err := eventer.New(context.Background(), nil, &serverconfig.EventConfig{
 				Driver:    "go-channel",
@@ -460,13 +456,14 @@ func TestDeleteUser_gRPC(t *testing.T) {
 				jwt:           mockJwtValidator,
 				providerStore: providers.NewProviderStore(mockStore),
 				authzClient:   &mock.SimpleClient{},
+				idManager:     mockIdManager,
 				cfg: &serverconfig.Config{
 					Auth: serverconfig.AuthConfig{
 						TokenKey: generateTokenKey(t),
 					},
 					Identity: serverconfig.IdentityConfigWrapper{
 						Server: serverconfig.IdentityConfig{
-							IssuerUrl:    testServer.URL,
+							IssuerUrl:    "http://example.com",
 							Realm:        "stacklok",
 							ClientId:     "client-id",
 							ClientSecret: "client-secret",

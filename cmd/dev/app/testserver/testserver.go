@@ -17,13 +17,13 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/mindersec/minder/internal/auth"
 	noopauth "github.com/mindersec/minder/internal/auth/jwt/noop"
 	mockauthz "github.com/mindersec/minder/internal/authz/mock"
 	"github.com/mindersec/minder/internal/controlplane/metrics"
 	"github.com/mindersec/minder/internal/db/embedded"
-	"github.com/mindersec/minder/internal/metrics/meters"
 	"github.com/mindersec/minder/internal/providers/ratecache"
 	provtelemetry "github.com/mindersec/minder/internal/providers/telemetry"
 	"github.com/mindersec/minder/internal/service"
@@ -88,9 +88,10 @@ func runTestServer(cmd *cobra.Command, _ []string) error {
 		&ratecache.NoopRestClientCache{},
 		&mockauthz.SimpleClient{},
 		&auth.IdentityClient{},
+		auth.NewNoopIdentityManager(),
 		metrics.NewNoopMetrics(),
 		provtelemetry.NewNoopMetrics(),
 		[]message.HandlerMiddleware{},
-		&meters.NoopMeterFactory{},
+		noop.NewMeterProvider(),
 	)
 }

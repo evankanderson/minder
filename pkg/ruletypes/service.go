@@ -11,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/open-policy-agent/opa/v1/ast"
 
 	"github.com/mindersec/minder/internal/db"
+	regoeval "github.com/mindersec/minder/internal/engine/eval/rego"
 	"github.com/mindersec/minder/internal/logger"
 	"github.com/mindersec/minder/internal/marketplaces/namespaces"
 	"github.com/mindersec/minder/internal/util"
@@ -111,6 +113,11 @@ func (s *ruleTypeService) CreateRuleType(
 	if err != nil {
 		return nil, errors.Join(ErrRuleTypeInvalid, err)
 	}
+
+	if err := validateProviderTraits(ruleType); err != nil {
+		return nil, errors.Join(ErrRuleTypeInvalid, err)
+	}
+
 	if uuidLike.MatchString(ruleType.Name) {
 		return nil, errors.Join(ErrRuleTypeInvalid, errors.New("rule type name must not be UUID-like"))
 	}
@@ -205,6 +212,10 @@ func (s *ruleTypeService) UpdateRuleType(
 
 	regoVersion, err := s.validateAndDetectRegoVersion(ctx, ruleType)
 	if err != nil {
+		return nil, errors.Join(ErrRuleTypeInvalid, err)
+	}
+
+	if err := validateProviderTraits(ruleType); err != nil {
 		return nil, errors.Join(ErrRuleTypeInvalid, err)
 	}
 
@@ -313,44 +324,60 @@ func (s *ruleTypeService) UpsertRuleType(
 	return nil
 }
 
-// validateAndDetectRegoVersion validates the rego definition syntax, gates
-// V1-only policies behind the feature flag, and returns the detected version
-// string ("v0" or "v1") for database storage. This avoids parsing the rego
-// definition multiple times across separate validation and detection steps.
+// validateAndDetectRegoVersion validates the Rego definition using both
+// dialects and returns the version persisted with the rule type. V0-only
+// policies remain accepted until the refusal flag is enabled.
 func (s *ruleTypeService) validateAndDetectRegoVersion(ctx context.Context, ruleType *pb.RuleType) (string, error) {
 	def := ruleType.GetDef().GetEval().GetRego().GetDef()
 	if def == "" {
 		return "v0", nil
 	}
 
-	flagOn := flags.Bool(ctx, s.featureFlags, flags.RegoV1DualParse)
-
-	_, errV0 := ast.ParseModuleWithOpts("minder-ruletype-def.rego", def,
-		ast.ParserOptions{RegoVersion: ast.RegoV0})
+	var errV0 error
+	if flags.Bool(ctx, s.featureFlags, flags.RegoV1RefuseV0) {
+		errV0 = errors.New(regoeval.V0MigrationMessage)
+	} else {
+		_, errV0 = ast.ParseModuleWithOpts("minder-ruletype-def.rego", def,
+			ast.ParserOptions{RegoVersion: ast.RegoV0})
+	}
 	_, errV1 := ast.ParseModuleWithOpts("minder-ruletype-def.rego", def,
 		ast.ParserOptions{RegoVersion: ast.RegoV1})
 
 	switch {
 	case errV0 == nil && errV1 == nil:
-		// Valid in both dialects — store as V1 when flag is on.
-		if flagOn {
-			return "v1", nil
-		}
-		return "v0", nil
+		return "v1", nil
 	case errV0 == nil:
-		// V0 only — always accepted.
 		return "v0", nil
 	case errV1 == nil:
-		// V1 only — gate behind feature flag.
-		if !flagOn {
-			return "", fmt.Errorf("rego definition uses V1-only syntax which is not yet enabled")
-		}
 		return "v1", nil
 	default:
-		// Invalid in both dialects — return V0 error as it's the more
-		// likely intent for authors not yet on V1.
 		return "", fmt.Errorf("rego definition is invalid: %w", errV0)
 	}
+}
+
+// validateProviderTraits validates that a rule type's declared
+// provider_traits are known trait names. This checks against the static set
+// of provider types Minder defines, not against providers currently
+// registered in any project: gating on registration would block loading
+// rule types before providers exist, and would leave rule types silently
+// stale if a provider is later unregistered.
+//
+// This validation catches a typo in provider_traits at rule type creation
+// or update time, before it's ever stored. Rule types stored before this
+// validation existed, or created through a path that bypasses it, can
+// still end up with an unrecognized trait name; that case is caught at
+// evaluation time instead (see rtengine.RuleTypeEngine.UnknownProviderTraits
+// and executor.evaluateRule), which surfaces it as an eval status error
+// rather than letting the rule type silently never evaluate.
+func validateProviderTraits(ruleType *pb.RuleType) error {
+	for _, trait := range ruleType.GetDef().GetProviderTraits() {
+		if pb.ProviderTypeFromString(trait) == pb.ProviderType_PROVIDER_TYPE_UNSPECIFIED {
+			return fmt.Errorf("invalid provider_traits: unknown trait %q, valid values are: %s",
+				trait, strings.Join(pb.ValidProviderTraitNames(), ", "))
+		}
+	}
+
+	return nil
 }
 
 func getRuleTypeSeverity(severity *pb.Severity) (*db.Severity, error) {

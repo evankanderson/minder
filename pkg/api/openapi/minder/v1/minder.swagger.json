@@ -6,7 +6,8 @@
   },
   "tags": [
     {
-      "name": "HealthService"
+      "name": "HealthService",
+      "description": "Simple Health Check Service\nreplies with OK"
     },
     {
       "name": "ArtifactService"
@@ -18,7 +19,8 @@
       "name": "RepositoryService"
     },
     {
-      "name": "UserService"
+      "name": "UserService",
+      "description": "manage Users CRUD"
     },
     {
       "name": "ProfileService"
@@ -45,7 +47,8 @@
       "name": "InviteService"
     },
     {
-      "name": "EntityInstanceService"
+      "name": "EntityInstanceService",
+      "description": "EntityInstanceService provides API endpoints for managing entity instances"
     }
   ],
   "consumes": [
@@ -3444,6 +3447,22 @@
           "UserService"
         ]
       }
+    },
+    "/api/v1/version": {
+      "get": {
+        "operationId": "HealthService_GetVersion",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetVersionResponse"
+            }
+          }
+        },
+        "tags": [
+          "HealthService"
+        ]
+      }
     }
   },
   "definitions": {
@@ -3587,7 +3606,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "type is the type of the remediation.\n* 'rest' can be used with any entity type.\n* 'gh_branch_protection' and 'pull_request' can only be used with the 'repository' entity type.\n* 'pull_request_comment' can only be used with the 'pull_request' entity type."
+          "description": "type is the type of the remediation.\n* 'rest' can be used with any entity type.\n* 'gh_branch_protection' 'pull_request', and 'issue' can only be used with the 'repository' entity type.\n* 'pull_request_comment' can only be used with the 'pull_request' entity type."
         },
         "rest": {
           "$ref": "#/definitions/v1RestType"
@@ -3600,6 +3619,9 @@
         },
         "pullRequestComment": {
           "$ref": "#/definitions/AlertAlertTypePRComment"
+        },
+        "issue": {
+          "$ref": "#/definitions/RemediateIssueRemediation"
         }
       }
     },
@@ -3840,6 +3862,33 @@
         }
       }
     },
+    "RemediateIssueRemediation": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "title": "the title of the issue\nSupports Minder's template interpolation syntax.\nThis is not validated here as it will be validated by the repository provider, i.e. GitHub upon\ncreation of the issue"
+        },
+        "body": {
+          "type": "string",
+          "title": "the body of the issue\nSupports Minder's template interpolation syntax\nThe rendered body is interpreted as Markdown by repository providers that\nsupport Markdown (e.g. Github)\nThis is not validated here as it will be validated by the repository provider, i.e. GitHub upon\ncreation of the issue"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Labels to apply when creating the issue.\nThis is not validated here as it will be validated by the repository provider, i.e. GitHub upon\ncreation of the issue"
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Usernames to assign when creating the issue.\nThis is not validated here as it will be validated by the repository provider, i.e. GitHub upon\ncreation of the issue"
+        }
+      }
+    },
     "RemediatePullRequestRemediation": {
       "type": "object",
       "properties": {
@@ -3907,6 +3956,13 @@
         "inEntity": {
           "type": "string",
           "description": "in_entity is the entity in which the rule is evaluated.\nThis can be repository, build_environment or artifact."
+        },
+        "providerTraits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "provider_traits declares the provider trait(s) this rule type\nrequires an implementation of. Values are trait names as used in\nprovider class definitions, e.g. \"github\", \"gitlab\", \"rest\",\n\"git\", \"oci\", \"repo-lister\", \"image-lister\".\nThis is AND semantics: a rule type requires an implementation of\nevery listed trait, not just one of them. For example, a rule\ntype requiring [\"git\", \"github\"] needs a provider that\nimplements both traits (e.g. to read repo contents via git and\ncall a forge-specific API via github). Use [\"rest\", \"github\"] for\na rule that calls the GitHub API and [\"rest\", \"gitlab\"] for one\nthat calls the GitLab API. If empty, the rule type is not gated\nby provider traits."
         },
         "ruleSchema": {
           "type": "object",
@@ -4254,6 +4310,13 @@
         "ruleType": {
           "$ref": "#/definitions/v1RuleType",
           "description": "rule_type is the rule type that was created."
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "warnings contains non-fatal notices about the created rule type."
         }
       },
       "description": "CreateRuleTypeResponse is the response to create a rule type.",
@@ -4559,6 +4622,10 @@
         "properties": {
           "type": "object",
           "description": "properties is a map of properties of the entity."
+        },
+        "originatingId": {
+          "type": "string",
+          "description": "originating_id is the id of the entity which originated this resource.\nIf the originating entity is cleaned up, this entity will also be removed."
         }
       },
       "title": "used for parsing resources in ruletypes"
@@ -5052,6 +5119,18 @@
         "projectRoles"
       ]
     },
+    "v1GetVersionResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        }
+      },
+      "title": "GetVersionResponse returns the build and version info of the Minder server"
+    },
     "v1GitHubAppParams": {
       "type": "object",
       "properties": {
@@ -5062,12 +5141,14 @@
         },
         "organization": {
           "type": "string",
-          "description": "The GitHub organization slug where the app is installed.  This is an\noutput-only parameter, and is validated on input if set (i.e. the value\nmust be either empty or match the org of the installation_id)."
+          "description": "The GitHub organization slug where the app is installed.  This is an\noutput-only parameter, and is validated on input if set (i.e. the value\nmust be either empty or match the org of the installation_id).",
+          "readOnly": true
         },
         "organizationId": {
           "type": "string",
           "format": "int64",
-          "description": "The GitHub organization ID where the app is installed.  This is an\noutput-only parameter, and is validated on input if set (i.e. the value\nmust be either empty or match the org of the installation_id)."
+          "description": "The GitHub organization ID where the app is installed.  This is an\noutput-only parameter, and is validated on input if set (i.e. the value\nmust be either empty or match the org of the installation_id).",
+          "readOnly": true
         }
       },
       "description": "GitHubAppParams is the parameters for a GitHub App provider."
@@ -5477,7 +5558,8 @@
         },
         "id": {
           "type": "string",
-          "description": "id is the id of the profile.\nThis is optional and is set by the system."
+          "description": "id is the id of the profile.\nThis is optional and is set by the system.",
+          "readOnly": true
         },
         "name": {
           "type": "string",
@@ -5683,7 +5765,8 @@
         },
         "project": {
           "type": "string",
-          "description": "project is the project where the provider is.  This is ignored on input\nin favor of the context field in CreateProviderRequest."
+          "description": "project is the project where the provider is.  This is ignored on input\nin favor of the context field in CreateProviderRequest.",
+          "readOnly": true
         },
         "version": {
           "type": "string",
@@ -5713,7 +5796,8 @@
         },
         "credentialsState": {
           "type": "string",
-          "description": "credentials_state is the state of the credentials for the provider.\nThis is an output-only field. It may be: \"set\", \"unset\", \"not_applicable\"."
+          "description": "credentials_state is the state of the credentials for the provider.\nThis is an output-only field. It may be: \"set\", \"unset\", \"not_applicable\".",
+          "readOnly": true
         },
         "id": {
           "type": "string",
@@ -5787,10 +5871,11 @@
         "PROVIDER_TYPE_GIT",
         "PROVIDER_TYPE_OCI",
         "PROVIDER_TYPE_REPO_LISTER",
-        "PROVIDER_TYPE_IMAGE_LISTER"
+        "PROVIDER_TYPE_IMAGE_LISTER",
+        "PROVIDER_TYPE_GITLAB"
       ],
       "default": "PROVIDER_TYPE_UNSPECIFIED",
-      "description": "ProviderTrait is the type of the provider."
+      "description": "ProviderTrait is the type of the provider.\nThe (name) option on each value below is a stable public interface, not\nan internal label: rule types declare required provider traits by these\nnames in provider_traits (see RuleType.Definition.provider_traits), and\nthat field is stored as serialized proto in the database. Renaming a\n(name) value would silently stop it matching any already-stored rule\ntype's provider_traits entries -- no error, just the rule type never\nevaluating again -- as well as breaking any client that parses or\nconstructs these names directly. Add new values instead of renaming\nexisting ones."
     },
     "v1ReconcileEntityRegistrationRequest": {
       "type": "object",
@@ -6336,7 +6421,8 @@
         },
         "id": {
           "type": "string",
-          "description": "id is the id of the rule type.\nThis is mostly optional and is set by the server."
+          "description": "id is the id of the rule type.\nThis is mostly optional and is set by the server.",
+          "readOnly": true
         },
         "name": {
           "type": "string",
@@ -6603,6 +6689,13 @@
         "ruleType": {
           "$ref": "#/definitions/v1RuleType",
           "description": "rule_type is the rule type that was updated."
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "warnings contains non-fatal notices about the updated rule type."
         }
       },
       "description": "UpdateRuleTypeResponse is the response to update a rule type.",
@@ -6641,14 +6734,16 @@
         "repoId": {
           "type": "string",
           "format": "int64",
-          "description": "The upstream identity of the repository, as an integer.\nThis is only set on output, and is ignored on input."
+          "description": "The upstream identity of the repository, as an integer.\nThis is only set on output, and is ignored on input.",
+          "readOnly": true
         },
         "context": {
           "$ref": "#/definitions/v1Context"
         },
         "registered": {
           "type": "boolean",
-          "description": "True if the repository is already registered in Minder.\nThis is only set on output, and is ignored on input."
+          "description": "True if the repository is already registered in Minder.\nThis is only set on output, and is ignored on input.",
+          "readOnly": true
         }
       },
       "required": [

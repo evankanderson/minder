@@ -10,10 +10,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
-	"golang.org/x/exp/slices"
 
 	"github.com/mindersec/minder/internal/crypto"
 	"github.com/mindersec/minder/internal/db"
@@ -55,6 +55,8 @@ func DBToPBType(t db.ProviderType) (minderv1.ProviderType, bool) {
 		return minderv1.ProviderType_PROVIDER_TYPE_OCI, true
 	case db.ProviderTypeImageLister:
 		return minderv1.ProviderType_PROVIDER_TYPE_IMAGE_LISTER, true
+	case db.ProviderTypeGitlab:
+		return minderv1.ProviderType_PROVIDER_TYPE_GITLAB, true
 	default:
 		return minderv1.ProviderType_PROVIDER_TYPE_UNSPECIFIED, false
 	}
@@ -75,6 +77,8 @@ func PBToDBType(t minderv1.ProviderType) (db.ProviderType, bool) {
 		return db.ProviderTypeOci, true
 	case minderv1.ProviderType_PROVIDER_TYPE_IMAGE_LISTER:
 		return db.ProviderTypeImageLister, true
+	case minderv1.ProviderType_PROVIDER_TYPE_GITLAB:
+		return db.ProviderTypeGitlab, true
 	case minderv1.ProviderType_PROVIDER_TYPE_UNSPECIFIED:
 		return db.ProviderType(""), false
 	default:

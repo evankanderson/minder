@@ -18,6 +18,8 @@ import (
 
 	backoffv4 "github.com/cenkalti/backoff/v4"
 	"github.com/go-git/go-git/v5"
+	"github.com/google/go-containerregistry/pkg/authn"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-github/v63/github"
 	"github.com/rs/zerolog"
 	"golang.org/x/oauth2"
@@ -27,7 +29,9 @@ import (
 	gitclient "github.com/mindersec/minder/internal/providers/git"
 	"github.com/mindersec/minder/internal/providers/github/ghcr"
 	"github.com/mindersec/minder/internal/providers/github/properties"
+	"github.com/mindersec/minder/internal/providers/oci"
 	"github.com/mindersec/minder/internal/providers/ratecache"
+	"github.com/mindersec/minder/internal/verifier/sigstore/container"
 	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	config "github.com/mindersec/minder/pkg/config/server"
 	engerrors "github.com/mindersec/minder/pkg/engine/errors"
@@ -71,6 +75,7 @@ type GitHub struct {
 	delegate             Delegate
 	providerClass        db.ProviderClass
 	ghcrwrap             *ghcr.ImageLister
+	ghcrOCI              *oci.OCI
 	gitConfig            config.GitConfig
 	webhookConfig        *config.WebhookConfig
 	propertyFetchers     properties.GhPropertyFetcherFactory
@@ -84,6 +89,12 @@ var _ provifv1.CommitStatusPublisher = (*GitHub)(nil)
 
 // Ensure that the GitHub client implements the ReviewPublisher interface
 var _ provifv1.ReviewPublisher = (*GitHub)(nil)
+
+// Ensure that the Github client implements the IssuePublisher interface
+var _ provifv1.IssuePublisher = (*GitHub)(nil)
+
+// Ensure that the GitHub client implements the OCI interface
+var _ provifv1.OCI = (*GitHub)(nil)
 
 // ClientService is an interface for GitHub operations
 // It is used to mock GitHub operations in tests, but in order to generate
@@ -174,16 +185,25 @@ func NewGitHub(
 	if cfg != nil {
 		gitConfig = cfg.Git
 	}
+	ghcrwrap := ghcr.FromGitHubClient(client, delegate.GetOwner())
 	return &GitHub{
 		client:               client,
 		packageListingClient: packageListingClient,
 		cache:                cache,
 		delegate:             delegate,
 		providerClass:        providerClass,
-		ghcrwrap:             ghcr.FromGitHubClient(client, delegate.GetOwner()),
-		gitConfig:            gitConfig,
-		webhookConfig:        whcfg,
-		propertyFetchers:     propertyFetchers,
+		ghcrwrap:             ghcrwrap,
+		// TODO: this credential isn't used by ghcrOCI's GetDigest/GetManifest/GetRawManifest
+		// today -- see the "private GHCR images" known limitation in PR #6791. Wire it in
+		// when that gets fixed.
+		ghcrOCI: oci.New(
+			delegate.GetCredential(),
+			container.GHCRRegistry,
+			fmt.Sprintf("%s/%s", container.GHCRRegistry, ghcrwrap.Namespace()),
+		),
+		gitConfig:        gitConfig,
+		webhookConfig:    whcfg,
+		propertyFetchers: propertyFetchers,
 	}
 }
 
@@ -425,6 +445,7 @@ func (c *GitHub) ListFiles(
 	}
 
 	resp, err := performWithRetry(ctx, op)
+	ObserveResponseRate(ctx, resp.resp)
 	return resp.files, resp.resp, err
 }
 
@@ -567,6 +588,8 @@ func (c *GitHub) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	if err != nil && resp == nil {
 		return nil, err
 	}
+
+	ObserveResponseRate(ctx, resp)
 
 	if resp.Response != nil {
 		resp.Body = io.NopCloser(&buf)
@@ -736,6 +759,78 @@ func (c *GitHub) ListPullRequests(
 	return prs, nil
 }
 
+// GetIssue get a single issue in repository
+func (c *GitHub) GetIssue(
+	ctx context.Context,
+	owner, repo string,
+	number int,
+) (*github.Issue, error) {
+	issue, _, err := c.client.Issues.Get(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	return issue, nil
+}
+
+// CreateIssue creates an issue in a repository
+func (c *GitHub) CreateIssue(
+	ctx context.Context,
+	owner, repo string,
+	title string,
+	body string,
+	labels []string,
+	assignees []string,
+) (*github.Issue, error) {
+	req := &github.IssueRequest{
+		Title: github.String(title),
+		Body:  github.String(body),
+	}
+	if len(labels) > 0 {
+		req.Labels = &labels
+	}
+	if len(assignees) > 0 {
+		req.Assignees = &assignees
+	}
+	issue, _, err := c.client.Issues.Create(ctx, owner, repo, req)
+	if err != nil {
+		return nil, err
+	}
+	return issue, nil
+}
+
+// CloseIssue closes an issue in a repository
+func (c *GitHub) CloseIssue(
+	ctx context.Context,
+	owner, repo string,
+	number int,
+	comment string,
+) (*github.Issue, error) {
+	_ = comment
+	// TODO: If comment is provided, create an issue comment before closing the issue.
+	issue, _, err := c.client.Issues.Edit(ctx, owner, repo, number, &github.IssueRequest{
+		State: github.String("closed"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return issue, nil
+}
+
+// ReopenIssue reopens an issue in a repository
+func (c *GitHub) ReopenIssue(
+	ctx context.Context,
+	owner, repo string,
+	number int,
+) (*github.Issue, error) {
+	issue, _, err := c.client.Issues.Edit(ctx, owner, repo, number, &github.IssueRequest{
+		State: github.String("open"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return issue, nil
+}
+
 // CreateIssueComment creates a comment on a pull request or an issue
 func (c *GitHub) CreateIssueComment(
 	ctx context.Context, owner, repo string, number int, comment string,
@@ -820,6 +915,40 @@ func (c *GitHub) ListImages(ctx context.Context) ([]string, error) {
 // GetNamespaceURL returns the URL for the repository
 func (c *GitHub) GetNamespaceURL() string {
 	return c.ghcrwrap.GetNamespaceURL()
+}
+
+// GetDigest returns the digest for the given tag of the given container.
+func (c *GitHub) GetDigest(ctx context.Context, name, tag string) (string, error) {
+	return c.ghcrOCI.GetDigest(ctx, name, tag)
+}
+
+// GetReferrer returns the referrer for the given tag of the given container.
+func (c *GitHub) GetReferrer(ctx context.Context, name, tag, artifactType string) (any, error) {
+	return c.ghcrOCI.GetReferrer(ctx, name, tag, artifactType)
+}
+
+// GetManifest returns the manifest for the given tag of the given container.
+func (c *GitHub) GetManifest(ctx context.Context, name, tag string) (*v1.Manifest, error) {
+	return c.ghcrOCI.GetManifest(ctx, name, tag)
+}
+
+// GetRawManifest returns the manifest or image index exactly as returned by the registry, keyed by digest.
+func (c *GitHub) GetRawManifest(ctx context.Context, name, digest string) (*provifv1.RawManifest, error) {
+	return c.ghcrOCI.GetRawManifest(ctx, name, digest)
+}
+
+// GetRegistry returns the registry hostname for GitHub-backed artifacts.
+func (*GitHub) GetRegistry() string {
+	return container.GHCRRegistry
+}
+
+// GetAuthenticator returns the authenticator for accessing GHCR.
+//
+// Uses GetAsContainerAuthenticator rather than ghcrOCI's own GetAuthenticator,
+// since that one assumes an OAuth2 token and returns a Bearer, not the Basic
+// auth GHCR expects.
+func (c *GitHub) GetAuthenticator() (authn.Authenticator, error) {
+	return c.GetCredential().GetAsContainerAuthenticator(c.ghcrwrap.Namespace()), nil
 }
 
 // GetArtifactVersions returns a list of all versions for a specific artifact

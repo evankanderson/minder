@@ -6,6 +6,7 @@ package actions
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -16,13 +17,16 @@ import (
 
 func TestShouldRemediate(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name       string
-		prevStatus RemediationStatus
-		hasPrev    bool
-		evalErr    error
-		expected   engif.ActionCmd
+		name            string
+		prevStatus      RemediationStatus
+		lastUpdated     time.Time
+		hasPrev         bool
+		evalErr         error
+		expected        engif.ActionCmd
+		expectedCooloff bool
 	}{
 		// Happy path: eval success
 		{
@@ -63,28 +67,43 @@ func TestShouldRemediate(t *testing.T) {
 			expected:   engif.ActionCmdDoNothing,
 		},
 		{
-			// NOTE: EvalStatusTypesError has an empty case body in shouldRemediate,
-			// so eval errors fall through to the default DoNothing. This may be a bug
-			// (see the comment on cases Error/Success in shouldRemediate).
-			name:       "eval error, prev success -> do nothing",
+			// Cancel remediation actions if rule evaluation has an error
+			name:       "eval error, prev success -> off",
 			prevStatus: RemediationStatusSuccess,
 			hasPrev:    true,
 			evalErr:    errors.New("random error"),
-			expected:   engif.ActionCmdDoNothing,
+			expected:   engif.ActionCmdOff,
 		},
 		{
-			name:       "eval failure, prev error -> do nothing",
-			prevStatus: RemediationStatusError,
-			hasPrev:    true,
-			evalErr:    enginerr.NewErrEvaluationFailed("failed"),
-			expected:   engif.ActionCmdDoNothing,
+			name:            "eval failure, recent prev error -> do nothing",
+			prevStatus:      RemediationStatusError,
+			lastUpdated:     now.Add(-remediationRetryCooloff + time.Second),
+			hasPrev:         true,
+			evalErr:         enginerr.NewErrEvaluationFailed("failed"),
+			expected:        engif.ActionCmdDoNothing,
+			expectedCooloff: true,
 		},
 		{
-			name:       "eval error, prev error -> do nothing",
+			name:        "eval failure, prev error at cooloff boundary -> on",
+			prevStatus:  RemediationStatusError,
+			lastUpdated: now.Add(-remediationRetryCooloff),
+			hasPrev:     true,
+			evalErr:     enginerr.NewErrEvaluationFailed("failed"),
+			expected:    engif.ActionCmdOn,
+		},
+		{
+			name:       "eval error, prev error -> off",
 			prevStatus: RemediationStatusError,
 			hasPrev:    true,
 			evalErr:    errors.New("random error"),
-			expected:   engif.ActionCmdDoNothing,
+			expected:   engif.ActionCmdOff,
+		},
+		{
+			name:       "eval error, prev failure -> off",
+			prevStatus: RemediationStatusFailure,
+			hasPrev:    true,
+			evalErr:    errors.New("random error"),
+			expected:   engif.ActionCmdOff,
 		},
 		// Edge cases
 		{
@@ -113,11 +132,15 @@ func TestShouldRemediate(t *testing.T) {
 			t.Parallel()
 			var prev *previousEval
 			if tt.hasPrev {
-				prev = &previousEval{RemediationStatus: tt.prevStatus}
+				prev = &previousEval{
+					RemediationStatus:      tt.prevStatus,
+					RemediationLastUpdated: tt.lastUpdated,
+				}
 			}
 			status := mapEvalStatus(tt.evalErr)
-			got := shouldRemediate(prev, status)
+			got, cooloffHit := shouldRemediate(prev, status, now)
 			assert.Equal(t, tt.expected, got)
+			assert.Equal(t, tt.expectedCooloff, cooloffHit)
 		})
 	}
 }
@@ -195,13 +218,13 @@ func TestShouldAlert(t *testing.T) {
 		},
 		// Expected errors
 		{
-			name:      "eval error -> do nothing",
+			name:      "eval error, alert off -> on",
 			prevAlert: AlertStatusOff,
 			hasPrev:   true,
 			evalErr:   errors.New("generic error"),
 			remErr:    nil,
 			remType:   pull_request.RemediateType,
-			expected:  engif.ActionCmdDoNothing,
+			expected:  engif.ActionCmdOn,
 		},
 		// Edge cases
 		{

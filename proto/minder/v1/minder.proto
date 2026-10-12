@@ -142,6 +142,17 @@ service HealthService {
             no_log: true
         };
     }
+
+    rpc GetVersion(GetVersionRequest) returns (GetVersionResponse) {
+    option (google.api.http) = {
+        get: "/api/v1/version"
+    };
+
+    option (rpc_options) = {
+        target_resource: TARGET_RESOURCE_NONE
+        no_log: true
+    };
+}
 }
 
 service ArtifactService {
@@ -181,6 +192,14 @@ service ArtifactService {
         };
     }
 
+}
+
+message GetVersionRequest {}
+
+// GetVersionResponse returns the build and version info of the Minder server
+message GetVersionResponse {
+    string version = 1;
+    string commit = 2;
 }
 
 message ListArtifactsRequest {
@@ -1038,7 +1057,7 @@ service ProvidersService {
 
         option (minder.v1.rpc_options) = {
             target_resource: TARGET_RESOURCE_PROJECT
-            relation: RELATION_REPO_DELETE
+            relation: RELATION_PROVIDER_DELETE
         };
     }
 
@@ -1173,7 +1192,7 @@ message StoreProviderTokenRequest {
     // access_token is the token to store.
     string access_token = 3 [
         (buf.validate.field).string = {
-            pattern: "^[a-zA-Z0-9-_]+$",
+            pattern: "^[a-zA-Z0-9-_.]+$",
             min_len: 10,
             max_len: 200,
         },
@@ -1257,7 +1276,7 @@ message UpstreamRepositoryRef {
     // This is optional.
     string owner = 1 [
         (buf.validate.field).string = {
-            pattern: "^[A-Za-z][-[:word:]]*$"
+            pattern: "^[A-Za-z0-9][-[:word:]]*$"
             max_len: 200,
         },
         (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
@@ -1274,12 +1293,15 @@ message UpstreamRepositoryRef {
     // This is only set on output, and is ignored on input.
     int64 repo_id = 3 [
         (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE, // Given it's ignored on input, we can ignore empty values
-        (buf.validate.field).int64 = { gte: 1 }
+        (buf.validate.field).int64 = { gte: 1 },
+        (google.api.field_behavior) = OUTPUT_ONLY
     ];
     Context context = 4;
     // True if the repository is already registered in Minder.
     // This is only set on output, and is ignored on input.
-    bool registered = 5;
+    bool registered = 5 [
+        (google.api.field_behavior) = OUTPUT_ONLY
+    ];
 }
 
 // Repository API objects. This is only used in responses.
@@ -2110,6 +2132,15 @@ message GHCRProviderConfig {
     optional string namespace = 1;
 }
 
+// QuayProviderConfig contains the configuration for the Quay.io provider.
+//
+// Namespace: is the namespace for the Quay.io provider.
+//
+message QuayProviderConfig {
+    // namespace is the namespace for the Quay.io provider.
+    optional string namespace = 1;
+}
+
 // Context defines the context in which a rule is evaluated.
 // this normally refers to a combination of the provider, organization and project.
 message Context {
@@ -2233,6 +2264,8 @@ message CreateRuleTypeResponse {
     RuleType rule_type = 1 [
         (google.api.field_behavior) = REQUIRED
     ];
+    // warnings contains non-fatal notices about the created rule type.
+    repeated string warnings = 2;
 }
 
 // UpdateRuleTypeRequest is the request to update a rule type.
@@ -2250,6 +2283,8 @@ message UpdateRuleTypeResponse {
     RuleType rule_type = 1 [
         (google.api.field_behavior) = REQUIRED
     ];
+    // warnings contains non-fatal notices about the updated rule type.
+    repeated string warnings = 2;
 }
 
 // DeleteRuleTypeRequest is the request to delete a rule type.
@@ -2581,7 +2616,8 @@ message RuleType {
     // id is the id of the rule type.
     // This is mostly optional and is set by the server.
     optional string id = 1 [
-        (buf.validate.field).string = {uuid: true}
+        (buf.validate.field).string = {uuid: true},
+        (google.api.field_behavior) = OUTPUT_ONLY
     ];
 
     // name is the name of the rule type.
@@ -2624,6 +2660,22 @@ message RuleType {
                 max_len: 200,
             }
         ];
+
+        reserved 8;
+
+        // provider_traits declares the provider trait(s) this rule type
+        // requires an implementation of. Values are trait names as used in
+        // provider class definitions, e.g. "github", "gitlab", "rest",
+        // "git", "oci", "repo-lister", "image-lister".
+        // This is AND semantics: a rule type requires an implementation of
+        // every listed trait, not just one of them. For example, a rule
+        // type requiring ["git", "github"] needs a provider that
+        // implements both traits (e.g. to read repo contents via git and
+        // call a forge-specific API via github). Use ["rest", "github"] for
+        // a rule that calls the GitHub API and ["rest", "gitlab"] for one
+        // that calls the GitLab API. If empty, the rule type is not gated
+        // by provider traits.
+        repeated string provider_traits = 9;
 
         // rule_schema is the schema of the rule. This is expressed in JSON Schema.
         google.protobuf.Struct rule_schema = 2;
@@ -2803,11 +2855,11 @@ message RuleType {
         message Remediate {
             // type is the type of the remediation.
             // * 'rest' can be used with any entity type.
-            // * 'gh_branch_protection' and 'pull_request' can only be used with the 'repository' entity type.
+            // * 'gh_branch_protection' 'pull_request', and 'issue' can only be used with the 'repository' entity type.
             // * 'pull_request_comment' can only be used with the 'pull_request' entity type.
             string type = 1 [
                 (buf.validate.field).string = {
-                    in: ["rest", "gh_branch_protection", "pull_request", "pull_request_comment"],
+                    in: ["rest", "gh_branch_protection", "pull_request", "pull_request_comment", "issue"],
                 },
                 (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
             ];
@@ -2907,10 +2959,40 @@ message RuleType {
                 optional ActionsReplaceTagsWithSha actions_replace_tags_with_sha = 5;
             }
 
+            message IssueRemediation {
+                // the title of the issue
+                // Supports Minder's template interpolation syntax.
+                // This is not validated here as it will be validated by the repository provider, i.e. GitHub upon
+                // creation of the issue
+                string title = 1 [(buf.validate.field).string = {
+                    min_len: 1
+                    max_len: 75
+                }];
+                // the body of the issue
+                // Supports Minder's template interpolation syntax
+                // The rendered body is interpreted as Markdown by repository providers that
+                // support Markdown (e.g. Github)
+                // This is not validated here as it will be validated by the repository provider, i.e. GitHub upon
+                // creation of the issue
+                string body = 2 [(buf.validate.field).string = {
+                    min_len: 1
+                    max_len: 65536
+                }];
+                // Labels to apply when creating the issue.
+                // This is not validated here as it will be validated by the repository provider, i.e. GitHub upon
+                // creation of the issue
+                repeated string labels = 3;
+                // Usernames to assign when creating the issue.
+                // This is not validated here as it will be validated by the repository provider, i.e. GitHub upon
+                // creation of the issue
+                repeated string assignees = 4;
+            }
+
             optional RestType rest = 2;
             optional GhBranchProtectionType gh_branch_protection = 3;
             optional PullRequestRemediation pull_request = 4;
             optional Alert.AlertTypePRComment pull_request_comment = 5;
+            optional IssueRemediation issue = 6;
         }
         Remediate remediate = 6;
 
@@ -2997,7 +3079,8 @@ message Profile {
     // id is the id of the profile.
     // This is optional and is set by the system.
     optional string id = 2 [
-        (buf.validate.field).string = {uuid: true}
+        (buf.validate.field).string = {uuid: true},
+        (google.api.field_behavior) = OUTPUT_ONLY
     ];
 
     // name is the name of the profile instance.
@@ -3745,17 +3828,29 @@ message GitHubAppParams {
     // The GitHub organization slug where the app is installed.  This is an
     // output-only parameter, and is validated on input if set (i.e. the value
     // must be either empty or match the org of the installation_id).
-    string organization = 2;
+    string organization = 2 [
+        (google.api.field_behavior) = OUTPUT_ONLY
+    ];
     // The GitHub organization ID where the app is installed.  This is an
     // output-only parameter, and is validated on input if set (i.e. the value
     // must be either empty or match the org of the installation_id).
     int64 organization_id = 3 [
         (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-        (buf.validate.field).int64 = {gt: 0}
+        (buf.validate.field).int64 = {gt: 0},
+        (google.api.field_behavior) = OUTPUT_ONLY
     ];
 }
 
 // ProviderTrait is the type of the provider.
+// The (name) option on each value below is a stable public interface, not
+// an internal label: rule types declare required provider traits by these
+// names in provider_traits (see RuleType.Definition.provider_traits), and
+// that field is stored as serialized proto in the database. Renaming a
+// (name) value would silently stop it matching any already-stored rule
+// type's provider_traits entries -- no error, just the rule type never
+// evaluating again -- as well as breaking any client that parses or
+// constructs these names directly. Add new values instead of renaming
+// existing ones.
 enum ProviderType {
     PROVIDER_TYPE_UNSPECIFIED = 0;
     PROVIDER_TYPE_GITHUB = 1 [(name) = "github"];
@@ -3764,6 +3859,7 @@ enum ProviderType {
     PROVIDER_TYPE_OCI = 4 [(name) = "oci"];
     PROVIDER_TYPE_REPO_LISTER = 5 [(name) = "repo-lister"];
     PROVIDER_TYPE_IMAGE_LISTER = 6 [(name) = "image-lister"];
+    PROVIDER_TYPE_GITLAB = 7 [(name) = "gitlab"];
 }
 
 enum ProviderClass {
@@ -3810,7 +3906,9 @@ message Provider {
     ];
     // project is the project where the provider is.  This is ignored on input
     // in favor of the context field in CreateProviderRequest.
-    string project = 2;
+    string project = 2 [
+        (google.api.field_behavior) = OUTPUT_ONLY
+    ];
     // version is the version of the provider.
     // if unset, "v1" is assumed.
     string version = 3 [
@@ -3834,7 +3932,9 @@ message Provider {
 
     // credentials_state is the state of the credentials for the provider.
     // This is an output-only field. It may be: "set", "unset", "not_applicable".
-    string credentials_state = 9;
+    string credentials_state = 9 [
+        (google.api.field_behavior) = OUTPUT_ONLY
+    ];
 
     // id is the unique identifier of the provider.
     string id = 10 [
@@ -4126,6 +4226,10 @@ message EntityInstance {
 
     // properties is a map of properties of the entity.
     google.protobuf.Struct properties = 5;
+
+    // originating_id is the id of the entity which originated this resource.
+    // If the originating entity is cleaned up, this entity will also be removed.
+    string originating_id = 6;
 }
 
 // EntityInstanceService provides API endpoints for managing entity instances

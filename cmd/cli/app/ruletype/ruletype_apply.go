@@ -6,7 +6,6 @@ package ruletype
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -80,6 +79,7 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 		})
 
 		if err == nil {
+			printWarnings(cmd, createResp.GetWarnings())
 			return createResp.RuleType, nil
 		}
 
@@ -100,6 +100,7 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 			return nil, fmt.Errorf("error updating rule type from %s: %w", fileName, err)
 		}
 
+		printWarnings(cmd, updateResp.GetWarnings())
 		return updateResp.RuleType, nil
 	}
 
@@ -107,7 +108,7 @@ func applyCommand(cmd *cobra.Command, args []string) error {
 		if f.Path != "-" && shouldSkipFile(f.Path) {
 			continue
 		}
-		if err = execOnOneRuleType(cmd.Context(), table, f.Path, os.Stdin, project, applyFunc); err != nil {
+		if err = execOnOneRuleType(cmd, table, f, project, applyFunc); err != nil {
 			if f.Expanded && minderv1.YouMayHaveTheWrongResource(err) {
 				cmd.PrintErrf("Skipping file %s: not a rule type\n", f.Path)
 				// We'll skip the file if it's not a rule type

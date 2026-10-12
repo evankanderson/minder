@@ -18,6 +18,7 @@ import (
 	"github.com/mindersec/minder/internal/providers/credentials"
 	"github.com/mindersec/minder/internal/util/ptr"
 	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
+	config "github.com/mindersec/minder/pkg/config/server"
 )
 
 type mockGitlabClient struct {
@@ -31,6 +32,21 @@ func (m *mockGitlabClient) Do(ctx context.Context, req *http.Request) (*http.Res
 
 func (m *mockGitlabClient) NewRequest(method, requestUrl string, body any) (*http.Request, error) {
 	return m.newRequestFunc(method, requestUrl, body)
+}
+
+func Test_New_AcceptsContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// cancel immediately
+	cancel()
+
+	cred := credentials.NewGitLabTokenCredential("fake-token")
+	cfg := &minderv1.GitLabProviderConfig{}
+
+	client, err := New(ctx, cred, cfg, "https://example.com/webhook", "secret", config.GitConfig{})
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
 }
 
 func Test_gitlabClient_Do(t *testing.T) {
@@ -195,7 +211,7 @@ func Test_gitlabClient_NewRequest(t *testing.T) {
 	}
 }
 
-func Test_glRESTGet(t *testing.T) {
+func Test_restGet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -203,16 +219,19 @@ func Test_glRESTGet(t *testing.T) {
 		mockServerFunc func(w http.ResponseWriter, r *http.Request)
 		wantErr        bool
 		wantResult     map[string]string
+		wantNextPage   string
 	}{
 		{
 			name: "successful GET request",
 			mockServerFunc: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(nextPageHeader, "2")
 				w.WriteHeader(http.StatusOK)
 				err := json.NewEncoder(w).Encode(map[string]string{"key": "value"})
-				require.NoError(t, err)
+				assert.NoError(t, err)
 			},
-			wantErr:    false,
-			wantResult: map[string]string{"key": "value"},
+			wantErr:      false,
+			wantResult:   map[string]string{"key": "value"},
+			wantNextPage: "2",
 		},
 		{
 			name: "404 Not Found",
@@ -227,7 +246,7 @@ func Test_glRESTGet(t *testing.T) {
 			mockServerFunc: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, err := w.Write([]byte("invalid json"))
-				require.NoError(t, err)
+				assert.NoError(t, err)
 			},
 			wantErr:    true,
 			wantResult: nil,
@@ -250,13 +269,13 @@ func Test_glRESTGet(t *testing.T) {
 				},
 			}
 
-			var result map[string]string
-			err := glRESTGet(context.Background(), client, "/test", &result)
+			result, header, err := restGet[map[string]string](context.Background(), client, "/test")
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.wantResult, result)
+				assert.Equal(t, tt.wantNextPage, header.Get(nextPageHeader))
 			}
 		})
 	}
@@ -354,4 +373,20 @@ func Test_getParsedURL(t *testing.T) {
 			assert.Equal(t, tt.want.Fragment, got.Fragment, "Expected fragment to be equal")
 		})
 	}
+}
+
+func Test_New_GitConfigStoredOnClient(t *testing.T) {
+	t.Parallel()
+
+	cred := credentials.NewGitLabTokenCredential("fake-token")
+	cfg := &minderv1.GitLabProviderConfig{}
+	gitCfg := config.GitConfig{
+		MaxFiles: 100,
+		MaxBytes: 1024,
+	}
+
+	client, err := New(context.Background(), cred, cfg, "https://example.com/webhook", "secret", gitCfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, gitCfg, client.gitConfig)
 }

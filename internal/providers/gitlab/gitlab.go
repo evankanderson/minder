@@ -38,6 +38,7 @@ var AuthorizationFlows = []db.AuthorizationFlow{
 var _ provifv1.Git = (*gitlabClient)(nil)
 var _ provifv1.REST = (*gitlabClient)(nil)
 var _ provifv1.RepoLister = (*gitlabClient)(nil)
+var _ provifv1.GitLab = (*gitlabClient)(nil)
 
 type gitlabClient struct {
 	cred       provifv1.GitLabCredential
@@ -54,13 +55,14 @@ type gitlabClient struct {
 // New creates a new GitLab provider
 // Note that the webhook URL should already contain the provider class in the path
 func New(
+	ctx context.Context,
 	cred provifv1.GitLabCredential,
 	cfg *minderv1.GitLabProviderConfig,
 	webhookURL string,
 	currentWebhookSecret string,
+	gitConfig config.GitConfig,
 ) (*gitlabClient, error) {
-	// TODO: We need a context here.
-	cli := oauth2.NewClient(context.Background(), cred.GetAsOAuth2TokenSource())
+	cli := oauth2.NewClient(ctx, cred.GetAsOAuth2TokenSource())
 
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = "https://gitlab.com/api/v4/"
@@ -76,7 +78,7 @@ func New(
 		glcfg:                cfg,
 		webhookURL:           webhookURL,
 		currentWebhookSecret: currentWebhookSecret,
-		// TODO: Add git config
+		gitConfig:            gitConfig,
 	}, nil
 }
 
@@ -120,7 +122,8 @@ func MarshalV1Config(rawCfg json.RawMessage) (json.RawMessage, error) {
 
 // CanImplement returns true if the provider can implement the given trait
 func (*gitlabClient) CanImplement(trait minderv1.ProviderType) bool {
-	return trait == minderv1.ProviderType_PROVIDER_TYPE_GIT ||
+	return trait == minderv1.ProviderType_PROVIDER_TYPE_GITLAB ||
+		trait == minderv1.ProviderType_PROVIDER_TYPE_GIT ||
 		trait == minderv1.ProviderType_PROVIDER_TYPE_REST
 }
 
