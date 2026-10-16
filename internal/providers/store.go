@@ -35,7 +35,7 @@ type ProviderStore interface {
 	// GetByID returns the provider identified by its UUID primary key.
 	// This should only be used in places when it is certain that the requester
 	// is authorized to access this provider.
-	GetByID(ctx context.Context, providerID uuid.UUID) (*db.Provider, error)
+	GetByID(ctx context.Context, providerID uuid.UUID, qtx db.Querier) (*db.Provider, error)
 	// GetByIDProject returns the provider identified by its UUID primary key.
 	// ProjectID is also used in the query to prevent unauthorized access
 	// when used in API endpoints
@@ -121,8 +121,8 @@ func (p *providerStore) Create(
 	return &prov, nil
 }
 
-func (p *providerStore) GetByID(ctx context.Context, providerID uuid.UUID) (*db.Provider, error) {
-	provider, err := p.store.GetProviderByID(ctx, providerID)
+func (p *providerStore) GetByID(ctx context.Context, providerID uuid.UUID, qtx db.Querier) (*db.Provider, error) {
+	provider, err := qtx.GetProviderByID(ctx, providerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find provider by ID: %w", err)
 	}
@@ -199,7 +199,7 @@ func (p *providerStore) Delete(ctx context.Context, providerID uuid.UUID, projec
 }
 
 func (p *providerStore) Update(ctx context.Context, providerID uuid.UUID, projectID uuid.UUID, config json.RawMessage) error {
-	currentProvider, err := p.GetByID(ctx, providerID)
+	currentProvider, err := p.GetByID(ctx, providerID, p.store)
 	if err != nil {
 		return err
 	}

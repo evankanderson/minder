@@ -154,7 +154,7 @@ func PBAuthFlowsToDB(flows []minderv1.AuthorizationFlow) ([]db.AuthorizationFlow
 func GetCredentialStateForProvider(
 	ctx context.Context,
 	prov db.Provider,
-	s db.Store,
+	s db.Querier,
 	cryptoEngine crypto.Engine,
 	provCfg *serverconfig.ProviderConfig,
 ) (string, error) {
@@ -184,16 +184,16 @@ func getCredentialForProvider(
 	ctx context.Context,
 	prov db.Provider,
 	crypteng crypto.Engine,
-	store db.Store,
+	qtx db.Querier,
 	cfg *serverconfig.ProviderConfig,
 ) (provinfv1.Credential, error) {
-	encToken, err := store.GetAccessTokenByProjectID(ctx,
+	encToken, err := qtx.GetAccessTokenByProjectID(ctx,
 		db.GetAccessTokenByProjectIDParams{Provider: prov.Name, ProjectID: prov.ProjectID})
 	if errors.Is(err, sql.ErrNoRows) {
 		zerolog.Ctx(ctx).Debug().Msg("no access token found for provider")
 
 		// If we don't have an access token, check if we have an installation ID
-		return getInstallationTokenCredential(ctx, prov, store, cfg)
+		return getInstallationTokenCredential(ctx, prov, qtx, cfg)
 	} else if err != nil {
 		return nil, fmt.Errorf("error getting credential: %w", err)
 	}
@@ -222,14 +222,15 @@ func getCredentialForProvider(
 func getInstallationTokenCredential(
 	ctx context.Context,
 	prov db.Provider,
-	store db.Store,
+	qtx db.Querier,
 	provCfg *serverconfig.ProviderConfig,
 ) (provinfv1.Credential, error) {
-	installation, err := store.GetInstallationIDByProviderID(ctx, uuid.NullUUID{
+	installation, err := qtx.GetInstallationIDByProviderID(ctx, uuid.NullUUID{
 		UUID:  prov.ID,
 		Valid: true,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
+		zerolog.Ctx(ctx).Info().Str("prov", prov.ID.String()).Msg("no installation for")
 		return credentials.NewEmptyCredential(), nil
 	} else if err != nil {
 		return nil, fmt.Errorf("error getting installation ID: %w", err)

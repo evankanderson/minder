@@ -217,7 +217,7 @@ func (s *Server) RegisterEntity(
 	}
 
 	// 5. Create entity using EntityCreator service
-	ewp, err := s.entityCreator.CreateEntity(ctx, provider, projectID,
+	ewp, err := s.entityCreator.CreateEntity(ctx, s.store, provider, projectID,
 		in.GetEntityType(), identifyingProps, nil) // Use default options
 	if err != nil {
 		// If the error is already a UserVisibleError, pass it through directly.

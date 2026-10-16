@@ -326,7 +326,7 @@ func (s *Server) ListRemoteRepositoriesFromProvider(
 
 	providerName := in.GetContext().GetProvider()
 	provs, errorProvs, err := s.providerManager.BulkInstantiateByTrait(
-		ctx, projectID, db.ProviderTypeRepoLister, providerName)
+		ctx, s.store, projectID, db.ProviderTypeRepoLister, providerName)
 	if err != nil {
 		pErr := providers.ErrProviderNotFoundBy{}
 		if errors.As(err, &pErr) {

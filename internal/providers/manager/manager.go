@@ -34,15 +34,15 @@ type NameProviderTuple struct {
 
 // ProviderManager encapsulates operations for manipulating Provider instances
 type ProviderManager interface {
+	// Register allows adding provider class managers to the provider manager after it has been created,
+	// to permit components to depend on providers before all provider class managers are initialized.
+	Register(managers ...ProviderClassManager) error
 	// CreateFromConfig creates a new Provider instance in the database with a given configuration or the provider default
 	CreateFromConfig(
 		ctx context.Context, providerClass db.ProviderClass, projectID uuid.UUID, name string, config json.RawMessage,
 	) (*db.Provider, error)
 	// InstantiateFromID creates the provider from the Provider's UUID
-	InstantiateFromID(ctx context.Context, providerID uuid.UUID) (v1.Provider, error)
-	// InstantiateFromNameProject creates the provider using the provider's name and
-	// project hierarchy.
-	InstantiateFromNameProject(ctx context.Context, name string, projectID uuid.UUID) (v1.Provider, error)
+	InstantiateFromID(ctx context.Context, providerID uuid.UUID, qtx db.Querier) (v1.Provider, error)
 	// BulkInstantiateByTrait instantiates multiple providers in the
 	// project hierarchy. Providers are filtered by trait, and optionally by
 	// name (empty name string means no filter by name).
@@ -51,6 +51,7 @@ type ProviderManager interface {
 	// out, instead a list of failed provider names will be returned.
 	BulkInstantiateByTrait(
 		ctx context.Context,
+		qtx db.Querier,
 		projectID uuid.UUID,
 		trait db.ProviderType,
 		name string,
@@ -85,7 +86,7 @@ type ProviderClassManager interface {
 	// MarshallConfig validates the config and marshalls it into a format that can be stored in the database
 	MarshallConfig(ctx context.Context, class db.ProviderClass, config json.RawMessage) (json.RawMessage, error)
 	// Build creates an instance of Provider based on the config in the DB
-	Build(ctx context.Context, config *db.Provider) (v1.Provider, error)
+	Build(ctx context.Context, config *db.Provider, store db.Querier) (v1.Provider, error)
 	// Delete deletes an instance of this provider
 	Delete(ctx context.Context, config *db.Provider) error
 	// GetSupportedClasses lists the types of Provider class which this manager
@@ -112,28 +113,31 @@ func (p *classTracker) getClassManager(class db.ProviderClass) (ProviderClassMan
 func newClassTracker(
 	classManagers ...ProviderClassManager,
 ) (*classTracker, error) {
-	classes := make(map[db.ProviderClass]ProviderClassManager)
-
-	for _, factory := range classManagers {
-		supportedClasses := factory.GetSupportedClasses()
-		// Sanity check: make sure we don't inadvertently register the same
-		// class to two different factories, and that the manager has at least
-		// one type registered
-		if len(supportedClasses) == 0 {
-			return nil, errors.New("provider class manager has no registered classes")
-		}
-		for _, class := range supportedClasses {
-			_, ok := classes[class]
-			if ok {
-				return nil, fmt.Errorf("attempted to register class %s more than once", class)
-			}
-			classes[class] = factory
-		}
+	ret := &classTracker{
+		classManagers: make(map[db.ProviderClass]ProviderClassManager),
 	}
 
-	return &classTracker{
-		classManagers: classes,
-	}, nil
+	err := ret.AddProviders(classManagers...)
+
+	return ret, err
+}
+
+// AddProviders adds new provider class managers to the class tracker.
+func (c *classTracker) AddProviders(classManagers ...ProviderClassManager) error {
+	for _, manager := range classManagers {
+		supportedClasses := manager.GetSupportedClasses()
+		if len(supportedClasses) == 0 {
+			return errors.New("provider class manager has no registered classes")
+		}
+		for _, class := range supportedClasses {
+			_, ok := c.classManagers[class]
+			if ok {
+				return fmt.Errorf("attempted to register class %s more than once", class)
+			}
+			c.classManagers[class] = manager
+		}
+	}
+	return nil
 }
 
 type providerManager struct {
@@ -167,6 +171,11 @@ func NewProviderManager(
 		}, nil
 }
 
+// Register allows adding providers after the manager has been created, to avoid cycles.
+func (p *providerManager) Register(managers ...ProviderClassManager) error {
+	return p.classTracker.AddProviders(managers...)
+}
+
 func (p *providerManager) CreateFromConfig(
 	ctx context.Context, providerClass db.ProviderClass, projectID uuid.UUID, name string, config json.RawMessage,
 ) (*db.Provider, error) {
@@ -198,18 +207,18 @@ func (p *providerManager) CreateFromConfig(
 	return p.store.Create(ctx, providerClass, name, projectID, marshalledConfig, traits, authFlows)
 }
 
-func (p *providerManager) InstantiateFromID(ctx context.Context, providerID uuid.UUID) (v1.Provider, error) {
+func (p *providerManager) InstantiateFromID(ctx context.Context, providerID uuid.UUID, qtx db.Querier) (v1.Provider, error) {
 	cachedProv, ok := p.providerCache.Get(providerID.String())
 	if ok {
 		return cachedProv, nil
 	}
 
-	config, err := p.store.GetByID(ctx, providerID)
+	config, err := p.store.GetByID(ctx, providerID, qtx)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving db record: %w", err)
 	}
 
-	builtProv, err := p.buildFromDBRecord(ctx, config)
+	builtProv, err := p.buildFromDBRecord(ctx, config, qtx)
 	if err != nil {
 		return nil, err
 	}
@@ -218,28 +227,9 @@ func (p *providerManager) InstantiateFromID(ctx context.Context, providerID uuid
 	return builtProv, nil
 }
 
-func (p *providerManager) InstantiateFromNameProject(ctx context.Context, name string, projectID uuid.UUID) (v1.Provider, error) {
-	key := fmt.Sprintf("%s-%s", projectID.String(), name)
-	cachedProv, ok := p.providerCache.Get(key)
-	if ok {
-		return cachedProv, nil
-	}
-	config, err := p.store.GetByName(ctx, projectID, name)
-	if err != nil {
-		return nil, fmt.Errorf("error retrieving db record: %w", err)
-	}
-
-	buitProv, err := p.buildFromDBRecord(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-
-	p.providerCache.Set(key, buitProv)
-	return buitProv, nil
-}
-
 func (p *providerManager) BulkInstantiateByTrait(
 	ctx context.Context,
+	qtx db.Querier,
 	projectID uuid.UUID,
 	trait db.ProviderType,
 	name string,
@@ -252,7 +242,7 @@ func (p *providerManager) BulkInstantiateByTrait(
 	result := make(map[uuid.UUID]NameProviderTuple, len(providerConfigs))
 	failedProviders := []string{}
 	for _, config := range providerConfigs {
-		provider, err := p.buildFromDBRecord(ctx, &config)
+		provider, err := p.buildFromDBRecord(ctx, &config, qtx)
 		if err != nil {
 			zerolog.Ctx(ctx).Error().Err(err).Msgf("error while instantiating provider %s", config.ID)
 			failedProviders = append(failedProviders, config.Name)
@@ -386,10 +376,10 @@ func (p *providerManager) deleteByRecord(ctx context.Context, config *db.Provide
 	return nil
 }
 
-func (p *providerManager) buildFromDBRecord(ctx context.Context, config *db.Provider) (v1.Provider, error) {
+func (p *providerManager) buildFromDBRecord(ctx context.Context, config *db.Provider, qtx db.Querier) (v1.Provider, error) {
 	manager, err := p.getClassManager(config.Class)
 	if err != nil {
 		return nil, err
 	}
-	return manager.Build(ctx, config)
+	return manager.Build(ctx, config, qtx)
 }

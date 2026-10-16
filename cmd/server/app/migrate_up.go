@@ -12,16 +12,31 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres" // nolint
 	_ "github.com/golang-migrate/migrate/v4/source/file"       // nolint
+	"github.com/open-feature/go-sdk/openfeature"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/mindersec/minder/database"
 	"github.com/mindersec/minder/internal/authz"
+	"github.com/mindersec/minder/internal/controlplane/metrics"
+	"github.com/mindersec/minder/internal/crypto"
 	"github.com/mindersec/minder/internal/db"
+	properties "github.com/mindersec/minder/internal/entities/properties/service"
+	entityService "github.com/mindersec/minder/internal/entities/service"
+	"github.com/mindersec/minder/internal/entities/service/validators"
+	"github.com/mindersec/minder/internal/providers"
+	ghprov "github.com/mindersec/minder/internal/providers/github"
+	"github.com/mindersec/minder/internal/providers/github/clients"
+	ghmanager "github.com/mindersec/minder/internal/providers/github/manager"
 	"github.com/mindersec/minder/internal/providers/github/service"
+	"github.com/mindersec/minder/internal/providers/manager"
+	"github.com/mindersec/minder/internal/providers/ratecache"
+	"github.com/mindersec/minder/internal/providers/telemetry"
 	"github.com/mindersec/minder/pkg/config"
 	serverconfig "github.com/mindersec/minder/pkg/config/server"
+	"github.com/mindersec/minder/pkg/eventer"
+	"github.com/mindersec/minder/pkg/flags"
 )
 
 // upCmd represents the up command
@@ -101,7 +116,62 @@ var upCmd = &cobra.Command{
 		}
 
 		cmd.Println("Backfilling organizations...")
-		if err := service.BackfillOrganizations(ctx, db.NewStore(dbConn)); err != nil {
+		// create an EntityCreator from configuration, like in AllInOneServerService
+		store := db.NewStore(dbConn)
+		flags.OpenFeatureProviderFromFlags(ctx, cfg.Flags)
+		featureFlagClient := openfeature.NewClient(cfg.Flags.AppName)
+
+		propSvc := properties.NewPropertiesService(store)
+
+		providerManager, closer, err := manager.NewProviderManager(ctx, providers.NewProviderStore(store))
+		if err != nil {
+			return fmt.Errorf("error while creating provider manager: %w", err)
+		}
+		defer closer()
+
+		eventer, err := eventer.New(ctx, featureFlagClient, &cfg.Events)
+		if err != nil {
+			return fmt.Errorf("unable to setup eventer: %w", err)
+		}
+		validatorRegistry := validators.NewValidatorRegistry()
+
+		entityCreator := entityService.NewEntityCreator(store, propSvc, providerManager, eventer, validatorRegistry)
+
+		cryptoEngine, err := crypto.NewEngineFromConfig(cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create crypto engine: %w", err)
+		}
+		ghClientFactory := clients.NewGitHubClientFactory(telemetry.NewNoopMetrics())
+		migrateMetrics := metrics.NewMetrics()
+
+		ghProviders := service.NewGithubProviderService(
+			store,
+			cryptoEngine,
+			migrateMetrics,
+			&cfg.Provider,
+			func(_ context.Context, _ db.ExtendQuerier, _ string, _ int64) (*db.Project, error) {
+				return nil, errors.New("Should not create projects from migration")
+			},
+			ghClientFactory,
+			entityCreator,
+		)
+		githubProviderManager := ghmanager.NewGitHubProviderClassManager(
+			&ratecache.NoopRestClientCache{},
+			ghClientFactory,
+			&cfg.Provider,
+			&cfg.WebhookConfig,
+			ghprov.NewFallbackTokenClient(cfg.Provider),
+			cryptoEngine,
+			store,
+			ghProviders,
+			propSvc,
+			migrateMetrics,
+			eventer,
+		)
+
+		providerManager.Register(githubProviderManager)
+
+		if err := service.BackfillOrganizations(ctx, store, providerManager, entityCreator); err != nil {
 			return fmt.Errorf("error while backfilling organizations: %w", err)
 		}
 

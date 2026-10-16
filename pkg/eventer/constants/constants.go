@@ -42,6 +42,8 @@ const (
 	// TopicQueueReconcileEntityDelete is the topic for reconciling when an entity is deleted
 	TopicQueueReconcileEntityDelete = "internal.entity.delete.event"
 	// TopicQueueReconcileEntityAdd is the topic for reconciling when an entity is added
+	// Use this event for all new entity types; the repo.reconciler.event should be considered historical
+	// and not used for new cases (existing usage is fine).
 	TopicQueueReconcileEntityAdd = "internal.entity.add.event"
 	// TopicQueueRepoReminder is the topic for repo reminder events
 	TopicQueueRepoReminder = "repo.reminder.event"

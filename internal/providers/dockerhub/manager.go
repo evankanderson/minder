@@ -19,14 +19,12 @@ import (
 )
 
 type providerClassManager struct {
-	store    db.Store
 	crypteng crypto.Engine
 }
 
 // NewDockerHubProviderClassManager creates a new provider class manager for the dockerhub provider
 func NewDockerHubProviderClassManager(crypteng crypto.Engine, store db.Store) *providerClassManager {
 	return &providerClassManager{
-		store:    store,
 		crypteng: crypteng,
 	}
 }
@@ -45,7 +43,7 @@ func (g *providerClassManager) GetProviderClassInfo(class db.ProviderClass) (*mi
 }
 
 // Build implements the ProviderClassManager interface
-func (g *providerClassManager) Build(ctx context.Context, config *db.Provider) (v1.Provider, error) {
+func (g *providerClassManager) Build(ctx context.Context, config *db.Provider, qtx db.Querier) (v1.Provider, error) {
 	class := config.Class
 	// This should be validated by the caller, but let's check anyway
 	if !slices.Contains(g.GetSupportedClasses(), class) {
@@ -56,7 +54,7 @@ func (g *providerClassManager) Build(ctx context.Context, config *db.Provider) (
 		return nil, fmt.Errorf("provider version not supported")
 	}
 
-	creds, err := g.getProviderCredentials(ctx, config)
+	creds, err := g.getProviderCredentials(ctx, config, qtx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to fetch credentials")
 	}
@@ -85,8 +83,9 @@ func (*providerClassManager) Delete(_ context.Context, _ *db.Provider) error {
 func (m *providerClassManager) getProviderCredentials(
 	ctx context.Context,
 	prov *db.Provider,
+	qtx db.Querier,
 ) (v1.OAuth2TokenCredential, error) {
-	encToken, err := m.store.GetAccessTokenByProjectID(ctx,
+	encToken, err := qtx.GetAccessTokenByProjectID(ctx,
 		db.GetAccessTokenByProjectIDParams{Provider: prov.Name, ProjectID: prov.ProjectID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("error getting credential: %w", err)

@@ -110,7 +110,7 @@ func runCmdWebhookUpdate(cmd *cobra.Command, _ []string) error {
 		// instantiate the provider. Taking this approach since we plan on
 		// changing webhook handling in minder, so I do not want to create any
 		// throwaway code.
-		providerInstance, err := providerManager.InstantiateFromID(ctx, provider.ID)
+		providerInstance, err := providerManager.InstantiateFromID(ctx, provider.ID, store)
 		if err != nil {
 			zerolog.Ctx(ctx).Err(err).Msg("cannot instantiate provider")
 			continue

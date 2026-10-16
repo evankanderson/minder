@@ -28,6 +28,7 @@ import (
 //
 // Currently, this method only supports repositories but is intended to be
 // generic and handle all types of entities.
+// TODO: hook in organizations
 // Todo: Utilise for other entities when such are supported.
 func (s *Server) ReconcileEntityRegistration(
 	ctx context.Context,
@@ -48,7 +49,7 @@ func (s *Server) ReconcileEntityRegistration(
 
 	providerNameParam := in.GetContext().GetProvider()
 	provs, errorProvs, err := s.providerManager.BulkInstantiateByTrait(
-		ctx, projectID, db.ProviderTypeRepoLister, providerNameParam)
+		ctx, s.store, projectID, db.ProviderTypeRepoLister, providerNameParam)
 	if err != nil {
 		pErr := providers.ErrProviderNotFoundBy{}
 		if errors.As(err, &pErr) {
@@ -56,6 +57,8 @@ func (s *Server) ReconcileEntityRegistration(
 		}
 		return nil, providerError(err)
 	}
+
+	// TODO: if github app provider, attempt to create the organization entity
 
 	for providerID, providerT := range provs {
 		repos, err := s.fetchRepositoriesForProvider(ctx, projectID, providerID, providerT.Name, providerT.Provider)
@@ -84,7 +87,8 @@ func (s *Server) ReconcileEntityRegistration(
 				continue
 			}
 
-			if err := s.publishEntityMessage(&l, msg); err != nil {
+			l.Info().Str("messageID", msg.UUID).Msg("publishing register entities message for execution")
+			if err := s.evt.Publish(constants.TopicQueueReconcileEntityAdd, msg); err != nil {
 				l.Error().Err(err).Str("messageID", msg.UUID).Msg("error publishing register entities message")
 			}
 		}
@@ -96,11 +100,6 @@ func (s *Server) ReconcileEntityRegistration(
 	}
 
 	return &pb.ReconcileEntityRegistrationResponse{}, nil
-}
-
-func (s *Server) publishEntityMessage(l *zerolog.Logger, msg *message.Message) error {
-	l.Info().Str("messageID", msg.UUID).Msg("publishing register entities message for execution")
-	return s.evt.Publish(constants.TopicQueueReconcileEntityAdd, msg)
 }
 
 func createEntityMessage(
@@ -126,35 +125,4 @@ func createEntityMessage(
 	}
 
 	return msg, nil
-}
-
-func (s *Server) publishOrganizationEntityEvent(
-	ctx context.Context,
-	providerID, projectID uuid.UUID,
-	login string,
-) {
-	l := zerolog.Ctx(ctx)
-	msg := message.NewMessage(uuid.New().String(), nil)
-	msg.SetContext(ctx)
-
-	orgProps := properties.NewProperties(map[string]any{
-		properties.PropertyName: login,
-	})
-
-	event := messages.NewMinderEvent().
-		WithProjectID(projectID).
-		WithProviderID(providerID).
-		WithEntityType(pb.Entity_ENTITY_ORGANIZATION).
-		WithProperties(orgProps)
-
-	if err := event.ToMessage(msg); err != nil {
-		l.Error().Err(err).Msg("error marshalling organization entity event")
-		return
-	}
-
-	if err := s.evt.Publish(constants.TopicQueueReconcileEntityAdd, msg); err != nil {
-		l.Error().Err(err).Msg("error publishing organization entity event")
-	} else {
-		l.Info().Str("messageID", msg.UUID).Msg("published organization entity event for execution")
-	}
 }

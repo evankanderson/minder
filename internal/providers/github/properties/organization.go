@@ -52,52 +52,89 @@ func fetchOrganizationProperties(
 	ctx context.Context, ghCli *go_github.Client, _ bool, lookupProperties *properties.Properties,
 ) (map[string]any, error) {
 	// We can look up by either exact upstream ID or by name (login).
-	var user *go_github.User
+	// var user *go_github.User
+	var org *go_github.Organization
 	var err error
 
 	upstreamIDProp := lookupProperties.GetProperty(properties.PropertyUpstreamID)
 	nameProp := lookupProperties.GetProperty(properties.PropertyName)
 
+	// TODO: handle users registering their personal spaces
+
 	if upstreamIDProp != nil {
 		id, parseErr := upstreamIDProp.AsInt64()
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid upstream ID: %w", parseErr)
+			return nil, fmt.Errorf("Invalid upstream ID: %w", parseErr)
 		}
-		user, _, err = ghCli.Users.GetByID(ctx, id)
+		org, _, err = ghCli.Organizations.GetByID(ctx, id)
 	} else if name := nameProp.GetString(); name != "" {
-		user, _, err = ghCli.Users.Get(ctx, name)
+		org, _, err = ghCli.Organizations.Get(ctx, name)
 	} else {
-		return nil, fmt.Errorf("either upstream_id or name (login) must be provided to fetch an organization")
+		return nil, fmt.Errorf("either upstream_id or name must be provided to fetch an organization")
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to fetch organization: %w", err)
 	}
 
-	if user == nil {
+	if org == nil {
 		return nil, fmt.Errorf("organization/user not found")
 	}
 
-	result := map[string]any{
-		properties.PropertyUpstreamID: properties.NumericalValueToUpstreamID(user.GetID()),
-		properties.PropertyName:       user.GetLogin(),
-		properties.OrgPropertyIsUser:  user.GetType() == "User",
-	}
+	return map[string]any{
+		properties.PropertyUpstreamID:                 properties.NumericalValueToUpstreamID(org.GetID()),
+		properties.PropertyName:                       org.GetLogin(),
+		properties.OrgPropertyIsUser:                  false,
+		properties.OrgPropertyHasOrganizationProjects: org.GetHasOrganizationProjects(),
+		properties.OrgPropertyCreatedAt:               org.GetCreatedAt().Format(time.RFC3339),
+		properties.OrgPropertyPlanName:                org.GetPlan().GetName(),
+	}, nil
+	/*
+	   	if upstreamIDProp != nil {
+	   		id, parseErr := upstreamIDProp.AsInt64()
+	   		if parseErr != nil {
+	   			return nil, fmt.Errorf("invalid upstream ID: %w", parseErr)
+	   		}
+	   		user, _, err = ghCli.Users.GetByID(ctx, id)
+	   	} else if name := nameProp.GetString(); name != "" {
 
-	if user.GetType() == "Organization" {
-		org, _, err := ghCli.Organizations.GetByID(ctx, user.GetID())
-		if err == nil {
-			if org.HasOrganizationProjects != nil {
-				result[properties.OrgPropertyHasOrganizationProjects] = org.GetHasOrganizationProjects()
-			}
-		}
-	}
-	if user.CreatedAt != nil {
-		result[properties.OrgPropertyCreatedAt] = user.GetCreatedAt().Format(time.RFC3339)
-	}
-	if user.Plan != nil {
-		result[properties.OrgPropertyPlanName] = user.GetPlan().GetName()
-	}
+	   		user, _, err = ghCli.Users.Get(ctx, name)
+	   	} else {
 
-	return result, nil
+	   		return nil, fmt.Errorf("either upstream_id or name (login) must be provided to fetch an organization")
+	   	}
+
+	   	if err != nil {
+	   		return nil, err
+	   	}
+
+	   	if user == nil {
+	   		return nil, fmt.Errorf("organization/user not found")
+	   	}
+
+	   	result := map[string]any{
+	   		properties.PropertyUpstreamID: properties.NumericalValueToUpstreamID(user.GetID()),
+	   		properties.PropertyName:       user.GetLogin(),
+	   		properties.OrgPropertyIsUser:  user.GetType() == "User",
+	   	}
+
+	   	if user.GetType() == "Organization" {
+	   		org, _, err := ghCli.Organizations.GetByID(ctx, user.GetID())
+	   		if err == nil {
+	   			if org.HasOrganizationProjects != nil {
+	   				result[properties.OrgPropertyHasOrganizationProjects] = org.GetHasOrganizationProjects()
+	   			}
+	   		}
+	   	}
+
+	   	if user.CreatedAt != nil {
+	   		result[properties.OrgPropertyCreatedAt] = user.GetCreatedAt().Format(time.RFC3339)
+	   	}
+
+	   	if user.Plan != nil {
+	   		result[properties.OrgPropertyPlanName] = user.GetPlan().GetName()
+	   	}
+
+	   return result, nil
+	*/
 }

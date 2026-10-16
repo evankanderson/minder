@@ -12,12 +12,16 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/mindersec/minder/internal/db"
+	entityService "github.com/mindersec/minder/internal/entities/service"
+	entitySvc "github.com/mindersec/minder/internal/entities/service"
 	"github.com/mindersec/minder/internal/providers/github"
+	"github.com/mindersec/minder/internal/providers/manager"
+	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	"github.com/mindersec/minder/pkg/entities/properties"
 )
 
 // BackfillOrganizations loops through GitHub app providers and ensures an organization entity is tracked for each
-func BackfillOrganizations(ctx context.Context, store db.Store) error {
+func BackfillOrganizations(ctx context.Context, store db.Store, mgr manager.ProviderManager, creator entityService.EntityCreator) error {
 	l := zerolog.Ctx(ctx)
 	l.Info().Msg("Starting backfill for Organization entities...")
 
@@ -28,16 +32,16 @@ func BackfillOrganizations(ctx context.Context, store db.Store) error {
 
 	count := 0
 
-	for _, prov := range provs {
-		login := github.GetGithubAppOwner(prov.Name)
+	for _, dbProv := range provs {
+		login := github.GetGithubAppOwner(dbProv.Name)
 
 		_, err = db.WithTransaction(store, func(qtx db.ExtendQuerier) (any, error) {
 			// Check if organization entity already exists
 			_, err := qtx.GetEntityByName(ctx, db.GetEntityByNameParams{
 				EntityType: db.EntitiesOrganization,
 				Name:       login,
-				ProviderID: prov.ID,
-				ProjectID:  prov.ProjectID,
+				ProviderID: dbProv.ID,
+				ProjectID:  dbProv.ProjectID,
 			})
 
 			if err == nil {
@@ -46,32 +50,23 @@ func BackfillOrganizations(ctx context.Context, store db.Store) error {
 				return nil, err
 			}
 
-			// Entity doesn't exist, create it
-			ent, err := qtx.CreateEntity(ctx, db.CreateEntityParams{
-				EntityType: db.EntitiesOrganization,
-				Name:       login,
-				ProviderID: prov.ID,
-				ProjectID:  prov.ProjectID,
-			})
-			if err != nil {
-				return nil, err
-			}
-
-			// Set the default property (login name)
-			_, err = qtx.UpsertPropertyValueV1(ctx, db.UpsertPropertyValueV1Params{
-				EntityID: ent.ID,
-				Key:      properties.PropertyName,
-				Value:    login,
+			fetchByProps := properties.NewProperties(map[string]any{
+				properties.PropertyName: login,
 			})
 
-			if err == nil {
-				count++
+			if _, err := creator.CreateEntity(ctx, qtx, &dbProv, dbProv.ProjectID,
+				minderv1.Entity_ENTITY_ORGANIZATION, fetchByProps, &entitySvc.EntityCreationOptions{
+					RegisterWithProvider:       false, // Create webhook
+					PublishReconciliationEvent: true,
+				}); err != nil {
+				zerolog.Ctx(ctx).Error().Err(err).Str("provider", dbProv.ID.String()).Msg("Failed to create organization entity")
 			}
+
 			return nil, err
 		})
 
 		if err != nil {
-			l.Error().Err(err).Str("provider", prov.ID.String()).Msg("Failed to backfill organization for provider")
+			l.Error().Err(err).Str("provider", dbProv.ID.String()).Msg("Failed to backfill organization for provider")
 		}
 	}
 

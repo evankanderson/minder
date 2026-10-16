@@ -164,7 +164,7 @@ func (ps *propertiesService) RetrieveAllPropertiesForEntity(
 		Str("entityID", efp.Entity.ID.String()).
 		Logger()
 
-	propClient, err := provMan.InstantiateFromID(ctx, efp.Entity.ProviderID)
+	propClient, err := provMan.InstantiateFromID(ctx, efp.Entity.ProviderID, ps.store)
 	if err != nil {
 		return fmt.Errorf("error instantiating provider: %w", err)
 	}
@@ -186,6 +186,7 @@ func (ps *propertiesService) ReplaceAllProperties(
 	zerolog.Ctx(ctx).Debug().Str("entityID", entityID.String()).Msg("replacing all properties")
 
 	if store, ok := qtx.(db.Store); ok {
+		zerolog.Ctx(ctx).Warn().Msg("******** Using Store to create Transaction *******")
 		return store.WithTransactionErr(func(qtx db.ExtendQuerier) error {
 			return ps.replaceAllPropertiesWithQuerier(ctx, entityID, props, qtx)
 		})
@@ -380,10 +381,10 @@ func (ps *propertiesService) EntityWithPropertiesByUpstreamHint(
 }
 
 // EntityWithPropertiesAsProto converts the entity with properties to a protobuf message
-func (*propertiesService) EntityWithPropertiesAsProto(
+func (ps *propertiesService) EntityWithPropertiesAsProto(
 	ctx context.Context, ewp *models.EntityWithProperties, provMgr manager.ProviderManager,
 ) (protoreflect.ProtoMessage, error) {
-	prov, err := provMgr.InstantiateFromID(ctx, ewp.Entity.ProviderID)
+	prov, err := provMgr.InstantiateFromID(ctx, ewp.Entity.ProviderID, ps.store)
 	if err != nil {
 		return nil, fmt.Errorf("error instantiating provider %s: %w", ewp.Entity.ProviderID.String(), err)
 	}

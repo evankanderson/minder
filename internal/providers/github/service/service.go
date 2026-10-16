@@ -23,32 +23,29 @@ import (
 	"github.com/mindersec/minder/internal/controlplane/metrics"
 	"github.com/mindersec/minder/internal/crypto"
 	"github.com/mindersec/minder/internal/db"
+	entitySvc "github.com/mindersec/minder/internal/entities/service"
 	"github.com/mindersec/minder/internal/providers"
 	"github.com/mindersec/minder/internal/providers/credentials"
 	ghprov "github.com/mindersec/minder/internal/providers/github"
 	"github.com/mindersec/minder/internal/providers/github/clients"
+	minderv1 "github.com/mindersec/minder/pkg/api/protobuf/go/minder/v1"
 	"github.com/mindersec/minder/pkg/config/server"
+	"github.com/mindersec/minder/pkg/entities/properties"
 )
 
 //go:generate go run go.uber.org/mock/mockgen -package mock_$GOPACKAGE -destination=./mock/$GOFILE -source=./$GOFILE
-
-// GitHubProviderFacet encapsulates the created db.Provider and additional GitHub specific properties
-type GitHubProviderFacet struct {
-	Provider          *db.Provider
-	InstallationOwner string
-}
 
 // GitHubProviderService encapsulates methods for creating and updating providers
 type GitHubProviderService interface {
 	// CreateGitHubAppProvider creates a GitHub App provider with an installation ID in a known project
 	CreateGitHubAppProvider(ctx context.Context, token oauth2.Token, stateData db.GetProjectIDBySessionStateRow,
-		installationID int64, state string) (*GitHubProviderFacet, error)
+		installationID int64, state string) error
 	// CreateGitHubAppWithoutInvitation either creates a new project for the selected app, or stores
 	// the installation in preparation for creating a new project when the authorizing user logs in.
 	//
 	// Note that this function may return nil, nil if the installation user is not known to Minder.
 	CreateGitHubAppWithoutInvitation(ctx context.Context, qtx db.ExtendQuerier, userID int64,
-		installationID int64) (*db.Project, *GitHubProviderFacet, error)
+		installationID int64) (*db.Project, error)
 	// ValidateGitHubInstallationId checks if the supplied GitHub token has access to the installation ID
 	ValidateGitHubInstallationId(ctx context.Context, token *oauth2.Token, installationID int64) error
 	// DeleteGitHubAppInstallation deletes the GitHub App installation and provider from the database.
@@ -83,6 +80,7 @@ type ghProviderService struct {
 	projectFactory  ProjectFactory
 	ghClientService ghprov.ClientService
 	ghClientFactory clients.GitHubClientFactory
+	entityCreator   entitySvc.EntityCreator
 }
 
 // NewGithubProviderService creates an instance of GitHubProviderService
@@ -93,6 +91,7 @@ func NewGithubProviderService(
 	config *server.ProviderConfig,
 	projectFactory ProjectFactory,
 	ghClientFactory clients.GitHubClientFactory,
+	entityCreator entitySvc.EntityCreator,
 ) GitHubProviderService {
 	return &ghProviderService{
 		store:           store,
@@ -102,6 +101,7 @@ func NewGithubProviderService(
 		projectFactory:  projectFactory,
 		ghClientService: ghprov.ClientServiceImplementation{},
 		ghClientFactory: ghClientFactory,
+		entityCreator:   entityCreator,
 	}
 }
 
@@ -112,13 +112,13 @@ func (p *ghProviderService) CreateGitHubAppProvider(
 	stateData db.GetProjectIDBySessionStateRow,
 	installationID int64,
 	state string,
-) (*GitHubProviderFacet, error) {
+) error {
 	installationOwner, err := p.getInstallationOwner(ctx, installationID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return db.WithTransaction(p.store, func(qtx db.ExtendQuerier) (*GitHubProviderFacet, error) {
+	return p.store.WithTransactionErr(func(qtx db.ExtendQuerier) error {
 		validateOwnership := func(ctx context.Context) error {
 			// Older enrollments may not have a RemoteUser stored; these should age out fairly quickly.
 			p.mt.AddTokenOpCount(ctx, "check", stateData.RemoteUser.Valid)
@@ -146,12 +146,13 @@ func (p *ghProviderService) CreateGitHubAppProvider(
 
 		marshalledConfig, err := clients.MarshalV1AppConfig(stateData.ProviderConfig)
 		if err != nil {
-			return nil, providers.NewErrProviderInvalidConfig(err.Error())
+			return providers.NewErrProviderInvalidConfig(err.Error())
 		}
 
-		provider, err := createGitHubApp(
+		return createGitHubApp(
 			ctx,
 			qtx,
+			p.entityCreator,
 			stateData.ProjectID,
 			installationOwner,
 			installationID,
@@ -162,11 +163,6 @@ func (p *ghProviderService) CreateGitHubAppProvider(
 				Valid:  true,
 			},
 		)
-
-		return &GitHubProviderFacet{
-			Provider:          &provider,
-			InstallationOwner: installationOwner.GetLogin(),
-		}, err
 	})
 }
 
@@ -179,10 +175,10 @@ func (p *ghProviderService) CreateGitHubAppWithoutInvitation(
 	qtx db.ExtendQuerier,
 	userID int64,
 	installationID int64,
-) (*db.Project, *GitHubProviderFacet, error) {
+) (*db.Project, error) {
 	installationOwner, err := p.getInstallationOwner(ctx, installationID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	isOrg := installationOwner.GetType() == TypeGitHubOrganization
@@ -207,59 +203,57 @@ func (p *ghProviderService) CreateGitHubAppWithoutInvitation(
 			IsOrg: isOrg,
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("error saving installation ID: %w", err)
+			return nil, fmt.Errorf("error saving installation ID: %w", err)
 		}
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	zerolog.Ctx(ctx).Info().Str("project", project.ID.String()).Int64("owner", installationOwner.GetID()).
 		Msg("Creating GitHub App Provider")
 
-	provider, err := createGitHubApp(
-		ctx, qtx, project.ID, installationOwner, installationID, json.RawMessage(`{"github-app": {}}`), nil, sql.NullString{})
+	err = createGitHubApp(
+		ctx, qtx, p.entityCreator, project.ID, installationOwner, installationID, json.RawMessage(`{"github-app": {}}`), nil, sql.NullString{})
 	if err != nil {
-		return nil, nil, fmt.Errorf("error creating GitHub App Provider: %w", err)
+		return nil, fmt.Errorf("error creating GitHub App Provider: %w", err)
 
 	}
 
-	return project, &GitHubProviderFacet{
-		Provider:          &provider,
-		InstallationOwner: installationOwner.GetLogin(),
-	}, err
+	return project, nil
 }
 
 // Internal shared implementation between CreateGitHubAppProvider and CreateGitHubAppWithoutInvitation.
 // Note that this does not validate the projectId, and assumes the caller does so!
 func createGitHubApp(
 	ctx context.Context,
-	qtx db.Querier,
+	qtx db.ExtendQuerier,
+	creator entitySvc.EntityCreator,
 	projectId uuid.UUID,
 	installationOwner *github.User,
 	installationID int64,
 	providerConfig json.RawMessage,
 	validateOwnership func(ctx context.Context) error,
 	nonce sql.NullString,
-) (db.Provider, error) {
+) error {
 	if validateOwnership != nil {
 		if err := validateOwnership(ctx); err != nil {
-			return db.Provider{}, err
+			return err
 		}
 	}
 
 	class := db.ProviderClassGithubApp
 	providerInfo, err := ghprov.ProviderClassInfo(class)
 	if err != nil {
-		return db.Provider{}, err
+		return err
 	}
 
 	traits, err := providers.PBProviderTypesToDB(providerInfo.GetSupportedProviderTypes())
 	if err != nil {
-		return db.Provider{}, fmt.Errorf("error converting provider class traits: %w", err)
+		return fmt.Errorf("error converting provider class traits: %w", err)
 	}
 
 	authFlows, err := providers.PBAuthFlowsToDB(providerInfo.GetSupportedAuthFlows())
 	if err != nil {
-		return db.Provider{}, fmt.Errorf("error converting provider class auth flows: %w", err)
+		return fmt.Errorf("error converting provider class auth flows: %w", err)
 	}
 
 	// Save the installation ID and create a provider
@@ -272,7 +266,7 @@ func createGitHubApp(
 		AuthFlows:  authFlows,
 	})
 	if err != nil {
-		return db.Provider{}, err
+		return fmt.Errorf("error creating provider: %w", err)
 	}
 
 	isOrg := installationOwner.GetType() == TypeGitHubOrganization
@@ -292,10 +286,65 @@ func createGitHubApp(
 		IsOrg:             isOrg,
 	})
 	if err != nil {
-		return db.Provider{}, err
+		return fmt.Errorf("error upserting installation ID: %w", err)
 	}
-	return savedProvider, nil
+
+	fetchByProps := properties.NewProperties(map[string]interface{}{
+		properties.PropertyName: installationOwner.GetLogin(),
+	})
+	if _, err := creator.CreateEntity(ctx, qtx, &savedProvider, projectId,
+		minderv1.Entity_ENTITY_ORGANIZATION, fetchByProps, &entitySvc.EntityCreationOptions{
+			RegisterWithProvider:       false, // Create webhook
+			PublishReconciliationEvent: true,  // Publish reconciliation event
+		}); err != nil {
+		return fmt.Errorf("error creating organization entity: %w", err)
+	}
+	// if err := createOrganizationEntity(ctx, qtx, creator, installationOwner.GetLogin(), projectId, savedProvider); err != nil {
+	// 	return fmt.Errorf("error creating organization entity: %w", err)
+	// }
+	return nil
 }
+
+/*
+func createOrganizationEntity(
+	ctx context.Context, qtx db.ExtendQuerier, creator entitySvc.EntityCreator, name string, projectID uuid.UUID, provider db.Provider,
+) error {
+	// TODO: go through entityCreator
+	_, err := qtx.CreateEntity(ctx, db.CreateEntityParams{
+		EntityType: db.EntitiesOrganization,
+		Name:       name,
+		ProviderID: provider.ID,
+		ProjectID:  projectID,
+	})
+	if err != nil {
+		return fmt.Errorf("error creating organization entity: %w", err)
+	}
+
+	// Publish event to trigger first reconciliation.
+	orgEvent := message.NewMessage(uuid.New().String(), nil)
+	orgEvent.SetContext(ctx)
+
+	orgProps := properties.NewProperties(map[string]interface{}{
+		properties.PropertyName: name,
+	})
+
+	// TODO: call github.FetchAllPRoperties(ctx, orgProps, minderv1.Entity_ENTITY_ORGANIZATION, nil) to fill out properties
+	// This will be done by handling the init event.
+
+	event := messages.NewMinderEvent().
+		WithProjectID(projectID).
+		WithProviderID(provider.ID).
+		WithEntityType(minderv1.Entity_ENTITY_ORGANIZATION).
+		WithProperties(orgProps)
+
+	if err := event.ToMessage(orgEvent); err != nil {
+		return fmt.Errorf("error marshalling register entities message: %w", err)
+	}
+
+	eventer.Publish(constants.TopicQueueReconcileEntityAdd, orgEvent)
+	return nil
+}
+*/
 
 // ValidateGitHubInstallationId checks if the user has access to the installation ID
 func (p *ghProviderService) ValidateGitHubInstallationId(ctx context.Context, token *oauth2.Token, installationID int64) error {
@@ -346,10 +395,53 @@ func (p *ghProviderService) DeleteGitHubAppInstallation(ctx context.Context, ins
 		Int64("installationID", installationID).
 		Str("providerID", installation.ProviderID.UUID.String()).
 		Msg("Deleting claimed installation")
-	return p.store.DeleteProvider(ctx, db.DeleteProviderParams{
+	err = p.store.DeleteProvider(ctx, db.DeleteProviderParams{
 		ID:        installation.ProviderID.UUID,
 		ProjectID: installation.ProjectID.UUID,
 	})
+	if err != nil {
+		return fmt.Errorf("error deleting provider: %w", err)
+	}
+
+	// Delete the corresponding Organization entity if present.  Note that we don't
+	// have the organization login (entity name), but there should only be one
+	// organization per provider.  We _could_ also store the organization on the
+	// installation record, but this seems sufficient and avoids needing a backfill.
+	// Note that the name may not match the original name during registration if the
+	// organization was renamed after the installation was created.
+	// Ignore not found errors when deleting the organization, as it might not exist.
+	orgs, err := p.store.GetEntitiesByType(ctx, db.GetEntitiesByTypeParams{})
+	if err != nil {
+		// Ignore errors when fetching organizations, as we might not have any
+		zerolog.Ctx(ctx).Info().
+			Err(err).
+			Int64("installationID", installationID).
+			Msg("Error fetching organizations for provider")
+	}
+	if len(orgs) > 1 {
+		ids := make([]string, len(orgs))
+		for i, org := range orgs {
+			ids[i] = org.ID.String()
+		}
+		zerolog.Ctx(ctx).Error().
+			Int64("installationID", installationID).
+			Strs("entity_ids", ids).
+			Msg("More than one organization found for provider")
+	}
+	if len(orgs) == 1 {
+		err := p.store.DeleteEntity(ctx, db.DeleteEntityParams{
+			ID:        orgs[0].ID,
+			ProjectID: installation.ProjectID.UUID,
+		})
+		if err != nil {
+			zerolog.Ctx(ctx).Error().
+				Err(err).
+				Int64("installationID", installationID).
+				Msg("Error deleting organization for provider")
+		}
+	}
+
+	return nil
 }
 
 func (p *ghProviderService) ValidateGitHubAppWebhookPayload(r *http.Request) (payload []byte, err error) {

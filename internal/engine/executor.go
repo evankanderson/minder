@@ -96,7 +96,7 @@ func (e *executor) EvalEntityEvent(ctx context.Context, inf *entities.EntityInfo
 	entityStartTime := time.Now()
 	defer e.metrics.TimeProfileEvaluation(ctx, entityStartTime)
 
-	provider, err := e.providerManager.InstantiateFromID(ctx, inf.ProviderID)
+	provider, err := e.providerManager.InstantiateFromID(ctx, inf.ProviderID, e.querier)
 	if err != nil {
 		return fmt.Errorf("could not instantiate provider: %w", err)
 	}

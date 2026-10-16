@@ -102,9 +102,14 @@ services:
           selinux: Z
           create_host_path: false
       - ./database/migrations:/app/database/migrations:z
+      - ./.secrets/:/app/.secrets/:z
+      - ./.ssh:/app/.ssh:z
     environment:
       - KO_DATA_PATH=/app/
       - MINDER_AUTHZ_API_URL=http://openfga:8080
+      - MINDER_AUTH_TOKEN_KEY=/app/.ssh/token_key_passphrase
+      - MINDER_PROVIDER_GITHUB_APP_PRIVATE_KEY=/app/.secrets/github-app.pem
+    working_dir: /app
     networks:
       - app_net
     deploy:

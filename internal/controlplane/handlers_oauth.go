@@ -451,13 +451,8 @@ func (s *Server) processAppCallback(
 
 		logger.BusinessRecord(ctx).Project = stateData.ProjectID
 
-		dbProv, err := s.ghProviders.CreateGitHubAppProvider(ctx, *token, stateData, installationID, state)
-		if err != nil {
+		if err := s.ghProviders.CreateGitHubAppProvider(ctx, *token, stateData, installationID, state); err != nil {
 			return handleProviderCreationError(err)
-		}
-
-		if dbProv != nil {
-			s.publishOrganizationEntityEvent(ctx, dbProv.Provider.ID, dbProv.Provider.ProjectID, dbProv.InstallationOwner)
 		}
 
 		if stateData.RedirectUrl.Valid || stateData.EncryptedRedirect.Valid {
@@ -554,14 +549,9 @@ func (s *Server) handleAppInstallWithoutInvite(ctx context.Context, token *oauth
 	}
 
 	_, err = db.WithTransaction(s.store, func(qtx db.ExtendQuerier) (*db.Project, error) {
-		proj, dbProv, err := s.ghProviders.CreateGitHubAppWithoutInvitation(ctx, qtx, *userID, installationID)
+		proj, err := s.ghProviders.CreateGitHubAppWithoutInvitation(ctx, qtx, *userID, installationID)
 		if err != nil {
 			return nil, err
-		}
-		if dbProv != nil && proj != nil {
-			// It is generally safe to publish an event from within a transaction, as long
-			// as the event handler evaluates the state matching later.
-			s.publishOrganizationEntityEvent(ctx, dbProv.Provider.ID, proj.ID, dbProv.InstallationOwner)
 		}
 		return proj, nil
 	})
@@ -745,7 +735,7 @@ func (s *Server) VerifyProviderCredential(
 	)
 
 	if err == nil {
-		provider, err := s.providerStore.GetByID(ctx, installation.ProviderID.UUID)
+		provider, err := s.providerStore.GetByID(ctx, installation.ProviderID.UUID, s.store)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "error getting provider: %v", err)
 		}

@@ -250,48 +250,24 @@ func TestProviderManager_Instantiate(t *testing.T) {
 		Name               string
 		Provider           *db.Provider
 		ProviderStoreSetup fixtures.ProviderStoreMockBuilder
-		LookupType         lookupType
 		ExpectedError      string
 	}{
 		{
 			Name:               "InstantiateFromID returns error when DB lookup fails",
 			Provider:           githubProvider,
-			LookupType:         byID,
 			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithFailedGetByID),
-			ExpectedError:      "error retrieving db record",
-		},
-		{
-			Name:               "InstantiateFromNameProject returns error when DB lookup fails",
-			Provider:           githubProvider,
-			LookupType:         byName,
-			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithFailedGetByName),
 			ExpectedError:      "error retrieving db record",
 		},
 		{
 			Name:               "InstantiateFromID returns error when provider class has no associated manager",
 			Provider:           githubAppProvider,
-			LookupType:         byID,
 			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithSuccessfulGetByID(githubAppProvider)),
-			ExpectedError:      "unexpected provider class",
-		},
-		{
-			Name:               "InstantiateFromNameProject returns error when provider class has no associated manager",
-			Provider:           githubAppProvider,
-			LookupType:         byName,
-			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithSuccessfulGetByName(githubAppProvider)),
 			ExpectedError:      "unexpected provider class",
 		},
 		{
 			Name:               "InstantiateFromID calls manager and returns provider",
 			Provider:           githubProvider,
-			LookupType:         byID,
 			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithSuccessfulGetByID(githubProvider)),
-		},
-		{
-			Name:               "InstantiateFromNameProject calls manager and returns provider",
-			Provider:           githubProvider,
-			LookupType:         byName,
-			ProviderStoreSetup: fixtures.NewProviderStoreMock(fixtures.WithSuccessfulGetByName(githubProvider)),
 		},
 	}
 
@@ -312,11 +288,7 @@ func TestProviderManager_Instantiate(t *testing.T) {
 
 			defer closer()
 
-			if scenario.LookupType == byName {
-				_, err = provManager.InstantiateFromNameProject(ctx, scenario.Provider.Name, scenario.Provider.ProjectID)
-			} else {
-				_, err = provManager.InstantiateFromID(ctx, scenario.Provider.ID)
-			}
+			_, err = provManager.InstantiateFromID(ctx, scenario.Provider.ID)
 
 			if scenario.ExpectedError != "" {
 				require.ErrorContains(t, err, scenario.ExpectedError)

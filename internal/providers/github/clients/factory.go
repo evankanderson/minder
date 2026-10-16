@@ -117,12 +117,14 @@ func (g *githubClientFactory) buildClient(
 				zerolog.Ctx(req.Context()).Debug().
 					Str("type", "REQ").
 					Str("method", req.Method).
+					Str("auth", req.Header.Get("Authorization")).
 					Msg(req.URL.String())
 			},
 			LogResponse: func(resp *http.Response) {
 				zerolog.Ctx(resp.Request.Context()).Debug().
 					Str("type", "RESP").
 					Str("method", resp.Request.Method).
+					Str("auth", resp.Request.Header.Get("authorization")).
 					Str("status", fmt.Sprintf("%d", resp.StatusCode)).
 					Str("rate-limit", fmt.Sprintf("%s/%s",
 						resp.Request.Header.Get("x-ratelimit-used"),

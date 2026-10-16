@@ -39,6 +39,7 @@ func NewGitHubInstallationTokenCredential(
 	installationId int64,
 ) *GitHubInstallationTokenCredential {
 	token, err := generateInstallationAccessToken(ctx, appId, privateKey, endpoint, installationId)
+	zerolog.Ctx(context.Background()).Info().Int64("install", installationId).Str("token", token).Err(err).Msg("\\\\ Getting token for install //")
 	if err != nil {
 		zerolog.Ctx(ctx).Error().Err(err).
 			Int64("installation_id", installationId).
@@ -54,6 +55,9 @@ func NewGitHubInstallationTokenCredential(
 
 // SetAuthorizationHeader sets the authorization header on the request
 func (t *GitHubInstallationTokenCredential) SetAuthorizationHeader(req *http.Request) {
+	if t.token == "" {
+		zerolog.Ctx(req.Context()).Info().Msg("** EMPTY TOKEN IN SET AUTHORIZATION HEADER **")
+	}
 	req.Header.Set("Authorization", "Bearer "+t.token)
 }
 
@@ -89,6 +93,9 @@ func (t *GitHubInstallationTokenCredential) GetCacheKey() string {
 
 // GetAsOAuth2TokenSource returns the token as an OAuth2 token source
 func (t *GitHubInstallationTokenCredential) GetAsOAuth2TokenSource() oauth2.TokenSource {
+	if t.token == "" {
+		zerolog.Ctx(context.Background()).Info().Msg("** EMPTY TOKEN IN OAUTH2 TOKEN SOURCE **")
+	}
 	// We can use a static token source, since the token expires after 1 hour
 	// If we find the token is expiring while in use, we can switch to a ReuseTokenSource
 	return oauth2.StaticTokenSource(
@@ -123,9 +130,10 @@ func generateInstallationAccessToken(
 	}
 
 	// Create the installation access token
-	token, _, err := appClient.Apps.CreateInstallationToken(ctx, installationId, nil)
+	token, resp, err := appClient.Apps.CreateInstallationToken(ctx, installationId, nil)
 	if err != nil {
 		return "", err
 	}
+	zerolog.Ctx(ctx).Info().Str("__status__", resp.Status).Msg("CreateInstallToken")
 	return token.GetToken(), nil
 }

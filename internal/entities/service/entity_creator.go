@@ -45,6 +45,7 @@ type EntityCreator interface {
 	// CreateEntity creates an entity of any type
 	CreateEntity(
 		ctx context.Context,
+		qtx db.ExtendQuerier,
 		provider *db.Provider,
 		projectID uuid.UUID,
 		entityType pb.Entity,
@@ -80,23 +81,28 @@ func NewEntityCreator(
 
 func (e *entityCreator) CreateEntity(
 	ctx context.Context,
+	qtx db.ExtendQuerier,
 	provider *db.Provider,
 	projectID uuid.UUID,
 	entityType pb.Entity,
 	identifyingProps *properties.Properties,
 	opts *EntityCreationOptions,
 ) (*models.EntityWithProperties, error) {
+	if qtx == nil {
+		qtx = e.store
+	}
 	// 1. Instantiate provider
-	prov, err := e.providerManager.InstantiateFromID(ctx, provider.ID)
+	prov, err := e.providerManager.InstantiateFromID(ctx, provider.ID, qtx)
 	if err != nil {
 		return nil, fmt.Errorf("error instantiating provider: %w", err)
 	}
+	zerolog.Ctx(ctx).Warn().Msg("GOT PROVIDER")
 
 	// 2. Get default options from provider
 	providerDefaults := prov.CreationOptions(entityType)
 	if providerDefaults == nil {
 		return nil, fmt.Errorf("provider %s does not support entity type %s",
-			provider.Name, entityType)
+			prov.ProviderClassInfo().DisplayName, entityType)
 	}
 
 	// 3. Merge with caller-provided options (caller can override defaults)
@@ -115,6 +121,7 @@ func (e *entityCreator) CreateEntity(
 	if err != nil {
 		return nil, fmt.Errorf("error fetching properties: %w", err)
 	}
+	zerolog.Ctx(ctx).Warn().Str("props", allProps.String()).Msg("FetchAllProperties")
 
 	// 5. Run validators via registry
 	if err := e.validatorRegistry.Validate(ctx, entityType, allProps, projectID); err != nil {
@@ -138,8 +145,8 @@ func (e *entityCreator) CreateEntity(
 		registeredProps = allProps
 	}
 
-	// 8. Persist to database in transaction
-	ewp, err := db.WithTransaction(e.store, func(t db.ExtendQuerier) (*models.EntityWithProperties, error) {
+	// 8. Persist to database in a separate transaction, so we can roll back just the entity & registrition if needed.
+	createFunc := func(t db.ExtendQuerier) (*models.EntityWithProperties, error) {
 		// Generate entity ID
 		entityID := uuid.New()
 
@@ -174,7 +181,13 @@ func (e *entityCreator) CreateEntity(
 		}
 
 		return models.NewEntityWithProperties(ent, registeredProps), nil
-	})
+	}
+	var ewp *models.EntityWithProperties
+	if store, ok := qtx.(db.Store); ok {
+		ewp, err = db.WithTransaction(store, createFunc)
+	} else {
+		ewp, err = createFunc(qtx)
+	}
 	if err != nil {
 		// Cleanup: Try to deregister from provider if we registered
 		e.cleanupProviderRegistration(ctx, prov, entityType, registeredProps, opts.RegisterWithProvider)

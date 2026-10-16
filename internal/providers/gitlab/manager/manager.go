@@ -107,7 +107,7 @@ func (g *providerClassManager) GetProviderClassInfo(class db.ProviderClass) (*mi
 }
 
 // Build implements the ProviderClassManager interface
-func (g *providerClassManager) Build(ctx context.Context, config *db.Provider) (v1.Provider, error) {
+func (g *providerClassManager) Build(ctx context.Context, config *db.Provider, qtx db.Querier) (v1.Provider, error) {
 	class := config.Class
 	// This should be validated by the caller, but let's check anyway
 	if !slices.Contains(g.GetSupportedClasses(), class) {
@@ -118,7 +118,7 @@ func (g *providerClassManager) Build(ctx context.Context, config *db.Provider) (
 		return nil, fmt.Errorf("provider version not supported")
 	}
 
-	creds, err := g.getProviderCredentials(ctx, config)
+	creds, err := g.getProviderCredentials(ctx, config, qtx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to fetch credentials: %w", err)
 	}
@@ -144,8 +144,9 @@ func (*providerClassManager) Delete(_ context.Context, _ *db.Provider) error {
 func (m *providerClassManager) getProviderCredentials(
 	ctx context.Context,
 	prov *db.Provider,
+	qtx db.Querier,
 ) (v1.GitLabCredential, error) {
-	encToken, err := m.store.GetAccessTokenByProjectID(ctx,
+	encToken, err := qtx.GetAccessTokenByProjectID(ctx,
 		db.GetAccessTokenByProjectIDParams{Provider: prov.Name, ProjectID: prov.ProjectID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("error getting credential: %w", err)
@@ -170,7 +171,7 @@ func (m *providerClassManager) getProviderCredentials(
 			return nil, fmt.Errorf("error refreshing token: %w", err)
 		}
 
-		if err := m.persistToken(ctx, prov, newtoken); err != nil {
+		if err := m.persistToken(ctx, prov, qtx, newtoken); err != nil {
 			return nil, fmt.Errorf("error persisting refreshed token: %w", err)
 		}
 
@@ -213,7 +214,7 @@ func (m *providerClassManager) refreshToken(ctx context.Context, refreshToken st
 }
 
 func (m *providerClassManager) persistToken(
-	ctx context.Context, prov *db.Provider, token *oauth2.Token,
+	ctx context.Context, prov *db.Provider, qtx db.Querier, token *oauth2.Token,
 ) error {
 	encryptedToken, err := m.crypteng.EncryptOAuthToken(token)
 	if err != nil {
@@ -225,36 +226,29 @@ func (m *providerClassManager) persistToken(
 		return fmt.Errorf("error serializing token: %w", err)
 	}
 
-	err = m.store.WithTransactionErr(func(tx db.ExtendQuerier) error {
-		at, err := tx.GetAccessTokenByProjectID(ctx, db.GetAccessTokenByProjectIDParams{
-			ProjectID: prov.ProjectID,
-			Provider:  prov.Name,
-		})
-		if err != nil {
-			return fmt.Errorf("error getting access token: %w", err)
-		}
-
-		accessTokenParams := db.UpsertAccessTokenParams{
-			ProjectID:       prov.ProjectID,
-			Provider:        prov.Name,
-			OwnerFilter:     at.OwnerFilter,
-			EnrollmentNonce: at.EnrollmentNonce,
-			EncryptedAccessToken: pqtype.NullRawMessage{
-				RawMessage: serialized,
-				Valid:      true,
-			},
-		}
-
-		_, err = tx.UpsertAccessToken(ctx, accessTokenParams)
-		if err != nil {
-			return fmt.Errorf("error inserting access token: %w", err)
-		}
-		return nil
+	at, err := qtx.GetAccessTokenByProjectID(ctx, db.GetAccessTokenByProjectIDParams{
+		ProjectID: prov.ProjectID,
+		Provider:  prov.Name,
 	})
 	if err != nil {
-		return fmt.Errorf("error persisting token: %w", err)
+		return fmt.Errorf("error getting access token: %w", err)
 	}
 
+	accessTokenParams := db.UpsertAccessTokenParams{
+		ProjectID:       prov.ProjectID,
+		Provider:        prov.Name,
+		OwnerFilter:     at.OwnerFilter,
+		EnrollmentNonce: at.EnrollmentNonce,
+		EncryptedAccessToken: pqtype.NullRawMessage{
+			RawMessage: serialized,
+			Valid:      true,
+		},
+	}
+
+	_, err = qtx.UpsertAccessToken(ctx, accessTokenParams)
+	if err != nil {
+		return fmt.Errorf("error inserting access token: %w", err)
+	}
 	return nil
 }
 

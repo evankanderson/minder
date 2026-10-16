@@ -103,6 +103,12 @@ func AllInOneServerService(
 	profileSvc := profiles.NewProfileService(evt, selChecker)
 	ruleSvc := ruletypes.NewRuleTypeService(featureFlagClient)
 	roleScv := roles.NewRoleService()
+
+	// Create validator registry and register validators
+	validatorRegistry := validators.NewValidatorRegistry()
+	repoValidator := validators.NewRepositoryValidator(store)
+	validatorRegistry.AddValidator(pb.Entity_ENTITY_REPOSITORIES, repoValidator)
+
 	restMaxResponseBytes, err := cfg.DataSources.REST.GetMaxResponseBytes()
 	if err != nil {
 		return fmt.Errorf("invalid REST data source configuration: %w", err)
@@ -129,6 +135,20 @@ func AllInOneServerService(
 		featureFlagClient,
 	)
 	propSvc := propService.NewPropertiesService(store)
+	providerManager, closer, err := manager.NewProviderManager(ctx, providerStore)
+	if err != nil {
+		return fmt.Errorf("failed to create provider manager: %w", err)
+	}
+	defer closer()
+
+	// Create entity creator
+	entityCreator := entityService.NewEntityCreator(
+		store,
+		propSvc,
+		providerManager,
+		evt,
+		validatorRegistry,
+	)
 
 	// TODO: isolate GitHub-specific wiring. We'll need to isolate GitHub
 	// webhook handling to make this viable.
@@ -139,6 +159,7 @@ func AllInOneServerService(
 		&cfg.Provider,
 		makeProjectFactory(projectCreator, idClient),
 		ghClientFactory,
+		entityCreator,
 	)
 	githubProviderManager := ghmanager.NewGitHubProviderClassManager(
 		restClientCache,
@@ -189,31 +210,14 @@ func AllInOneServerService(
 		provmans = append(provmans, gitlabProviderManager)
 	}
 
-	providerManager, closer, err := manager.NewProviderManager(ctx, providerStore,
-		provmans...)
-	if err != nil {
-		return fmt.Errorf("failed to create provider manager: %w", err)
+	if err := providerManager.Register(provmans...); err != nil {
+		return fmt.Errorf("failed to register provider class managers: %w", err)
 	}
-	defer closer()
 
 	providerAuthManager, err := manager.NewAuthManager(provmans...)
 	if err != nil {
 		return fmt.Errorf("failed to create provider auth manager: %w", err)
 	}
-
-	// Create validator registry and register validators
-	validatorRegistry := validators.NewValidatorRegistry()
-	repoValidator := validators.NewRepositoryValidator(store)
-	validatorRegistry.AddValidator(pb.Entity_ENTITY_REPOSITORIES, repoValidator)
-
-	// Create entity creator
-	entityCreator := entityService.NewEntityCreator(
-		store,
-		propSvc,
-		providerManager,
-		evt,
-		validatorRegistry,
-	)
 
 	historySvc := history.NewEvaluationHistoryService(providerManager)
 	repos := repositories.NewRepositoryService(store, propSvc, evt, providerManager, entityCreator)

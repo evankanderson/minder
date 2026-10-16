@@ -70,7 +70,7 @@ func (a *addOriginatingEntityStrategy) GetEntity(
 	// This matches existing behavior and avoids potential loops since this code runs
 	// from a message handler. The parent repository's reconciliation handles the
 	// evaluation of child entities through the entity evaluation graph.
-	childEwp, err := a.entityCreator.CreateEntity(ctx, &provider,
+	childEwp, err := a.entityCreator.CreateEntity(ctx, a.store, &provider,
 		parentEwp.Entity.ProjectID, entMsg.Entity.Type, childProps,
 		&entityService.EntityCreationOptions{
 			OriginatingEntityID:        &parentEwp.Entity.ID,

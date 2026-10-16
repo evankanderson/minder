@@ -104,7 +104,7 @@ func readKey(keyDir string, keyFilename string) ([]byte, error) {
 	// in the algorithms.
 	key, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read key: %w", err)
+		return nil, fmt.Errorf("failed to read key %q: %w", cleanPath, err)
 	}
 	return key, nil
 }

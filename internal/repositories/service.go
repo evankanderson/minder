@@ -119,12 +119,12 @@ func NewRepositoryService(
 
 func (r *repositoryService) CreateRepository(
 	ctx context.Context,
-	provider *db.Provider,
+	dbProvider *db.Provider,
 	projectID uuid.UUID,
 	fetchByProps *properties.Properties,
 ) (*pb.Repository, error) {
 	// Use the EntityCreator service to create the repository entity
-	ewp, err := r.entityCreator.CreateEntity(ctx, provider, projectID,
+	ewp, err := r.entityCreator.CreateEntity(ctx, r.store, dbProvider, projectID,
 		pb.Entity_ENTITY_REPOSITORIES, fetchByProps, &entityService.EntityCreationOptions{
 			RegisterWithProvider:       true, // Create webhook
 			PublishReconciliationEvent: true, // Publish reconciliation event
@@ -149,7 +149,7 @@ func (r *repositoryService) CreateRepository(
 	}
 
 	// Telemetry logging
-	logger.BusinessRecord(ctx).ProviderID = provider.ID
+	logger.BusinessRecord(ctx).ProviderID = dbProvider.ID
 	logger.BusinessRecord(ctx).Project = projectID
 	logger.BusinessRecord(ctx).Repository = ewp.Entity.ID
 
@@ -327,7 +327,7 @@ func (r *repositoryService) DeleteByID(ctx context.Context, repositoryID uuid.UU
 
 	logger.BusinessRecord(ctx).ProviderID = ent.Entity.ProviderID
 
-	prov, err := r.providerManager.InstantiateFromID(ctx, ent.Entity.ProviderID)
+	prov, err := r.providerManager.InstantiateFromID(ctx, ent.Entity.ProviderID, r.store)
 	if err != nil {
 		return fmt.Errorf("error instantiating provider: %w", err)
 	}
@@ -387,7 +387,7 @@ func (r *repositoryService) DeleteByName(
 
 	logger.BusinessRecord(ctx).Repository = ent.Entity.ID
 
-	prov, err := r.providerManager.InstantiateFromID(ctx, ent.Entity.ProviderID)
+	prov, err := r.providerManager.InstantiateFromID(ctx, ent.Entity.ProviderID, r.store)
 	if err != nil {
 		return fmt.Errorf("error instantiating provider: %w", err)
 	}

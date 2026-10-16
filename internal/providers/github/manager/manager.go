@@ -99,7 +99,7 @@ func (*githubProviderManager) GetProviderClassInfo(class db.ProviderClass) (*min
 	return ghprovider.ProviderClassInfo(class)
 }
 
-func (g *githubProviderManager) Build(ctx context.Context, config *db.Provider) (v1.Provider, error) {
+func (g *githubProviderManager) Build(ctx context.Context, config *db.Provider, qtx db.Querier) (v1.Provider, error) {
 	class := config.Class
 	// This should be validated by the caller, but let's check anyway
 	if !slices.Contains(supportedClasses, class) {
@@ -110,7 +110,7 @@ func (g *githubProviderManager) Build(ctx context.Context, config *db.Provider) 
 		return nil, fmt.Errorf("provider version not supported")
 	}
 
-	creds, err := g.getProviderCredentials(ctx, config, class)
+	creds, err := g.getProviderCredentials(ctx, config, qtx, class)
 	if err != nil {
 		return nil, fmt.Errorf("unable to fetch credentials: %w", err)
 	}
@@ -166,13 +166,14 @@ func (g *githubProviderManager) Build(ctx context.Context, config *db.Provider) 
 	return cli, nil
 }
 
+// TODO: pass in a transaction to delete and remove g.store
 func (g *githubProviderManager) Delete(ctx context.Context, config *db.Provider) error {
 	state, err := providers.GetCredentialStateForProvider(ctx, *config, g.store, g.crypteng, g.config)
 	if err != nil {
 		return fmt.Errorf("unable to get credential state for provider %s: %w", config.ID, err)
 	}
 	if state == v1.CredentialStateSet {
-		provider, err := g.Build(ctx, config)
+		provider, err := g.Build(ctx, config, g.store)
 		if err != nil {
 			// errors from `Build` are good enough - no need to add extra context
 			return err
@@ -245,20 +246,22 @@ func (g *githubProviderManager) createProviderWithAccessToken(
 func (g *githubProviderManager) getProviderCredentials(
 	ctx context.Context,
 	prov *db.Provider,
+	qtx db.Querier,
 	class db.ProviderClass,
 ) (*credentialDetails, error) {
 	if class == db.ProviderClassGithub {
-		return g.getProviderCredentialsWithOAuthToken(ctx, prov)
+		return g.getProviderCredentialsWithOAuthToken(ctx, prov, qtx)
 	}
 
-	return g.createProviderWithInstallationToken(ctx, prov)
+	return g.createProviderWithInstallationToken(ctx, prov, qtx)
 }
 
 func (g *githubProviderManager) getProviderCredentialsWithOAuthToken(
 	ctx context.Context,
 	prov *db.Provider,
+	qtx db.Querier,
 ) (*credentialDetails, error) {
-	encToken, err := g.store.GetAccessTokenByProjectID(ctx,
+	encToken, err := qtx.GetAccessTokenByProjectID(ctx,
 		db.GetAccessTokenByProjectIDParams{Provider: prov.Name, ProjectID: prov.ProjectID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -273,8 +276,9 @@ func (g *githubProviderManager) getProviderCredentialsWithOAuthToken(
 func (g *githubProviderManager) createProviderWithInstallationToken(
 	ctx context.Context,
 	prov *db.Provider,
+	qtx db.Querier,
 ) (*credentialDetails, error) {
-	installation, err := g.store.GetInstallationIDByProviderID(ctx, uuid.NullUUID{
+	installation, err := qtx.GetInstallationIDByProviderID(ctx, uuid.NullUUID{
 		UUID:  prov.ID,
 		Valid: true,
 	})
@@ -282,6 +286,7 @@ func (g *githubProviderManager) createProviderWithInstallationToken(
 	ownerFilter := sql.NullString{}
 	if errors.Is(err, sql.ErrNoRows) {
 		// If the provider doesn't have a known credential set the credential to empty
+		zerolog.Ctx(ctx).Warn().Str("prov", prov.ID.String()).Msg("** Could not find provider, creating default **")
 		return &credentialDetails{
 			credential:  &credentials.GitHubInstallationTokenCredential{},
 			ownerFilter: ownerFilter,
